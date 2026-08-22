@@ -120,28 +120,34 @@ static uint64_t gettime_us(clockid_t clock)
 }
 
 static int cached_h264_encoder_result;
+static uint32_t cached_h264_encoder_format;
 static bool cached_h264_encoder_accepts_sw_frames;
 
-static void probe_h264_encoder(void)
+/* The probe is keyed on the pixel format because an encoder that handles one
+ * format may reject another, and choosing h264 for a frame the encoder cannot
+ * take would leave the client waiting for an update that never comes.
+ */
+static void probe_h264_encoder(uint32_t format)
 {
-	if (cached_h264_encoder_result)
+	if (cached_h264_encoder_result && cached_h264_encoder_format == format)
 		return;
 
-	struct h264_encoder *encoder = h264_encoder_create(1920, 1080,
-			DRM_FORMAT_XRGB8888, 5);
+	struct h264_encoder *encoder = h264_encoder_create(1920, 1080, format,
+			5);
 	cached_h264_encoder_result = encoder ? 1 : -1;
+	cached_h264_encoder_format = format;
 	cached_h264_encoder_accepts_sw_frames =
 		encoder && h264_encoder_accepts_sw_frames(encoder);
 	h264_encoder_destroy(encoder);
 
-	nvnc_log(NVNC_LOG_DEBUG, "H.264 encoding is %s",
+	nvnc_log(NVNC_LOG_DEBUG, "H.264 encoding is %s for format %"PRIx32,
 			cached_h264_encoder_result == 1 ? "available" :
-			"unavailable");
+			"unavailable", format);
 }
 
-static bool have_working_h264_encoder(void)
+static bool have_working_h264_encoder(uint32_t format)
 {
-	probe_h264_encoder();
+	probe_h264_encoder(format);
 	return cached_h264_encoder_result == 1;
 }
 
@@ -149,9 +155,9 @@ static bool have_working_h264_encoder(void)
  * first, which is only worth it if the encoder can actually do that. The VAAPI
  * and V4L2 implementations require a GBM buffer object, NVENC does not.
  */
-static bool h264_encoder_can_encode_sw_frames(void)
+static bool h264_encoder_can_encode_sw_frames(uint32_t format)
 {
-	probe_h264_encoder();
+	probe_h264_encoder(format);
 	return cached_h264_encoder_result == 1 &&
 		cached_h264_encoder_accepts_sw_frames;
 }
@@ -2381,10 +2387,11 @@ static enum rfb_encodings choose_frame_encoding(struct nvnc_client* client,
 			return client->encodings[i];
 #ifdef ENABLE_OPEN_H264
 		case RFB_ENCODING_OPEN_H264:
-			if (!have_working_h264_encoder())
+			if (!have_working_h264_encoder(fb->fourcc_format))
 				break;
 			if (fb->type != NVNC_FB_GBM_BO &&
-					!h264_encoder_can_encode_sw_frames())
+					!h264_encoder_can_encode_sw_frames(
+						fb->fourcc_format))
 				break;
 			return client->encodings[i];
 #endif

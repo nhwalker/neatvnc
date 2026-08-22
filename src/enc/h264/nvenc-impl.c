@@ -44,6 +44,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/opt.h>
 #include <libavutil/dict.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 
 #include <libdrm/drm_fourcc.h>
@@ -155,6 +156,10 @@ static bool codec_accepts_pix_fmt(const AVCodec* codec,
  * conversion is done with the driver's own coefficients. Setting
  * NEATVNC_H264_NVENC_FORMAT=nv12 moves the conversion to libswscale, where the
  * coefficients are ours to choose, at the cost of some CPU time.
+ *
+ * NEATVNC_H264_NVENC_FORMAT=rgb is a preference, not an override: an encoder
+ * that cannot take the frame buffer's format still gets NV12, because handing
+ * it something it rejects would only produce an encoder that fails to open.
  */
 static enum AVPixelFormat choose_encoder_format(const AVCodec* codec,
 		enum AVPixelFormat src_format)
@@ -164,11 +169,15 @@ static enum AVPixelFormat choose_encoder_format(const AVCodec* codec,
 	if (choice && strcmp(choice, "nv12") == 0)
 		return AV_PIX_FMT_NV12;
 
-	if (choice && strcmp(choice, "rgb") == 0)
+	if (codec_accepts_pix_fmt(codec, src_format))
 		return src_format;
 
-	return codec_accepts_pix_fmt(codec, src_format) ?
-		src_format : AV_PIX_FMT_NV12;
+	if (choice && strcmp(choice, "rgb") == 0)
+		nvnc_log(NVNC_LOG_WARNING,
+				"%s does not accept %s input; converting to nv12 instead",
+				codec->name, av_get_pix_fmt_name(src_format));
+
+	return AV_PIX_FMT_NV12;
 }
 
 /* Options are applied one at a time and failures are not fatal: the option set
