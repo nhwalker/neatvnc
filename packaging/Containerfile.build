@@ -1,0 +1,52 @@
+# Builds the patched neatvnc RPM in a ubi10 container.
+#
+#   docker build -f packaging/Containerfile.build -t neatvnc-rpm-build .
+#   docker run --rm -v "$PWD/rpms:/out" neatvnc-rpm-build
+#
+# Or, to get just the RPMs out:
+#
+#   docker build -f packaging/Containerfile.build --target export -o rpms .
+
+FROM registry.access.redhat.com/ubi10/ubi:latest AS build
+
+COPY packaging/repos.sh /tmp/repos.sh
+RUN bash /tmp/repos.sh && rm -f /tmp/repos.sh
+
+RUN dnf -y install \
+        git \
+        rpm-build \
+        rpmdevtools \
+        gcc \
+        meson \
+        ninja-build \
+        pkgconf-pkg-config \
+        aml-devel \
+        ffmpeg-devel \
+        gmp-devel \
+        gnutls-devel \
+        libdrm-devel \
+        mesa-libgbm-devel \
+        nettle-devel \
+        pixman-devel \
+        turbojpeg-devel \
+        zlib-ng-compat-devel \
+    && dnf clean all
+
+WORKDIR /src
+COPY . /src
+
+# rpmbuild refuses to run as root in some configurations and the source tree is
+# owned by whoever checked it out, so make git trust it either way.
+RUN git config --global --add safe.directory /src \
+    && packaging/build-rpm.sh /out
+
+# Sanity check: the built library must actually contain the NVENC
+# implementation, and must still be a drop-in for the distro package.
+RUN rpm -i /out/neatvnc-*.x86_64.rpm /out/neatvnc-devel-*.x86_64.rpm \
+    && test -e /usr/lib64/libneatvnc.so.0 \
+    && nm -D --defined-only /usr/lib64/libneatvnc.so.0 | grep -q nvnc_open \
+    && strings /usr/lib64/libneatvnc.so.0 | grep -q h264_nvenc \
+    && echo "OK: libneatvnc.so.0 carries the NVENC encoder"
+
+FROM scratch AS export
+COPY --from=build /out /
