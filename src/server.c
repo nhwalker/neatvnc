@@ -119,23 +119,41 @@ static uint64_t gettime_us(clockid_t clock)
 	return ts.tv_sec * 1000000ULL + ts.tv_nsec / 1000ULL;
 }
 
-static bool have_working_h264_encoder(void)
-{
-	static int cached_result;
+static int cached_h264_encoder_result;
+static bool cached_h264_encoder_accepts_sw_frames;
 
-	if (cached_result) {
-		return cached_result == 1;
-	}
+static void probe_h264_encoder(void)
+{
+	if (cached_h264_encoder_result)
+		return;
 
 	struct h264_encoder *encoder = h264_encoder_create(1920, 1080,
 			DRM_FORMAT_XRGB8888, 5);
-	cached_result = encoder ? 1 : -1;
+	cached_h264_encoder_result = encoder ? 1 : -1;
+	cached_h264_encoder_accepts_sw_frames =
+		encoder && h264_encoder_accepts_sw_frames(encoder);
 	h264_encoder_destroy(encoder);
 
 	nvnc_log(NVNC_LOG_DEBUG, "H.264 encoding is %s",
-			cached_result == 1 ? "available" : "unavailable");
+			cached_h264_encoder_result == 1 ? "available" :
+			"unavailable");
+}
 
-	return cached_result == 1;
+static bool have_working_h264_encoder(void)
+{
+	probe_h264_encoder();
+	return cached_h264_encoder_result == 1;
+}
+
+/* Encoding a frame that lives in main memory means uploading it to the GPU
+ * first, which is only worth it if the encoder can actually do that. The VAAPI
+ * and V4L2 implementations require a GBM buffer object, NVENC does not.
+ */
+static bool h264_encoder_can_encode_sw_frames(void)
+{
+	probe_h264_encoder();
+	return cached_h264_encoder_result == 1 &&
+		cached_h264_encoder_accepts_sw_frames;
 }
 
 static void client_drain_encoder(struct nvnc_client* client)
@@ -2363,10 +2381,10 @@ static enum rfb_encodings choose_frame_encoding(struct nvnc_client* client,
 			return client->encodings[i];
 #ifdef ENABLE_OPEN_H264
 		case RFB_ENCODING_OPEN_H264:
-			// h264 is useless for sw frames
-			if (fb->type != NVNC_FB_GBM_BO)
-				break;
 			if (!have_working_h264_encoder())
+				break;
+			if (fb->type != NVNC_FB_GBM_BO &&
+					!h264_encoder_can_encode_sw_frames())
 				break;
 			return client->encodings[i];
 #endif

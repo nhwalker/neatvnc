@@ -62,6 +62,7 @@ libdrm = dependency('libdrm', required: get_option('h264'))
 libavcodec = dependency('libavcodec', required: get_option('h264'))
 libavfilter = dependency('libavfilter', required: get_option('h264'))
 libavutil = dependency('libavutil', required: get_option('h264'))
+libswscale = dependency('libswscale', required: get_option('nvenc'))
 
 aml_version = ['>=0.3.0', '<0.4.0']
 aml_project = subproject('aml', required: false, version: aml_version)
@@ -155,6 +156,10 @@ endif
 have_ffmpeg = gbm.found() and libdrm.found() and libavcodec.found() and libavfilter.found() and libavutil.found()
 have_v4l2 = gbm.found() and libdrm.found() and cc.check_header('linux/videodev2.h')
 
+# NVENC takes frame buffers from main memory, so unlike the VAAPI encoder it
+# needs neither GBM nor libdrm.
+have_nvenc = get_option('nvenc').allowed() and libavcodec.found() and libavutil.found() and libswscale.found()
+
 if have_ffmpeg
 	sources += [ 'src/enc/h264/ffmpeg-impl.c' ]
 	dependencies += [libdrm, libavcodec, libavfilter, libavutil]
@@ -167,7 +172,14 @@ if have_v4l2
 	config.set('HAVE_V4L2', true)
 endif
 
-if have_ffmpeg or have_v4l2
+if have_nvenc
+	sources += [ 'src/enc/h264/nvenc-impl.c' ]
+	dependencies += [libavcodec, libavutil, libswscale]
+	config.set('HAVE_NVENC', true)
+	config.set('HAVE_LIBAVUTIL', true)
+endif
+
+if have_ffmpeg or have_v4l2 or have_nvenc
 	sources += [ 'src/enc/h264/encoder.c', 'src/enc/h264/open-h264.c' ]
 	config.set('ENABLE_OPEN_H264', true)
 endif
