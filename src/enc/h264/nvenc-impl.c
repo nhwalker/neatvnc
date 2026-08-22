@@ -216,21 +216,32 @@ static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
 	c->color_range = AVCOL_RANGE_MPEG;
 	c->color_trc = AVCOL_TRC_BT709;
 
-	char qp[16];
-	snprintf(qp, sizeof(qp), "%d", quality);
+	char quality_str[16];
+	snprintf(quality_str, sizeof(quality_str), "%d", quality);
 
-	/* Lowest latency preset, constant quantiser, no frame reordering and no
-	 * output delay. forced-idr makes AV_PICTURE_TYPE_I produce a real IDR,
-	 * which the open-h264 encoding relies on for context resets.
-	 */
-	try_set_option(self, "preset", "p1");
-	try_set_option(self, "tune", "ull");
-	try_set_option(self, "rc", "constqp");
-	try_set_option(self, "qp", qp);
-	try_set_option(self, "zerolatency", "1");
-	try_set_option(self, "delay", "0");
-	try_set_option(self, "forced-idr", "1");
-	try_set_option(self, "bf", "0");
+	if (strstr(codec->name, "nvenc")) {
+		/* Lowest latency preset, constant quantiser, no frame
+		 * reordering and no output delay. forced-idr makes
+		 * AV_PICTURE_TYPE_I produce a real IDR, which the open-h264
+		 * encoding relies on for context resets.
+		 */
+		try_set_option(self, "preset", "p1");
+		try_set_option(self, "tune", "ull");
+		try_set_option(self, "rc", "constqp");
+		try_set_option(self, "qp", quality_str);
+		try_set_option(self, "zerolatency", "1");
+		try_set_option(self, "delay", "0");
+		try_set_option(self, "forced-idr", "1");
+		try_set_option(self, "bf", "0");
+	} else {
+		/* Only reached when NEATVNC_H264_NVENC_CODEC points this
+		 * implementation at a software encoder, which is how the code
+		 * path is tested where there is no NVIDIA GPU.
+		 */
+		try_set_option(self, "preset", "ultrafast");
+		try_set_option(self, "tune", "zerolatency");
+		try_set_option(self, "crf", quality_str);
+	}
 
 	return 0;
 }
