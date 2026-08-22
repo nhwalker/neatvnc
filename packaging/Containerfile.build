@@ -9,6 +9,11 @@
 
 FROM registry.access.redhat.com/ubi10/ubi:latest AS build
 
+# Extra CA certificates for TLS-inspecting proxies. Empty by default, in which
+# case this is a no-op; see packaging/ca-certificates/README.md.
+COPY packaging/ca-certificates/ /etc/pki/ca-trust/source/anchors/
+RUN update-ca-trust extract
+
 COPY packaging/repos.sh /tmp/repos.sh
 RUN bash /tmp/repos.sh && rm -f /tmp/repos.sh
 
@@ -47,6 +52,15 @@ RUN rpm -i /out/neatvnc-*.x86_64.rpm /out/neatvnc-devel-*.x86_64.rpm \
     && nm -D --defined-only /usr/lib64/libneatvnc.so.0 | grep -q nvnc_open \
     && strings /usr/lib64/libneatvnc.so.0 | grep -q h264_nvenc \
     && echo "OK: libneatvnc.so.0 carries the NVENC encoder"
+
+# Integration test against the installed library. examples/draw feeds frame
+# buffers from main memory, exactly like Weston's VNC backend does, so this
+# exercises the whole software-frame H.264 path. NEATVNC_H264_NVENC_CODEC
+# stands a software encoder in for NVENC, because build machines have no GPU.
+RUN gcc -O2 -o /usr/local/bin/nvnc-draw examples/draw.c -DAML_UNSTABLE_API=1 \
+        $(pkg-config --cflags --libs neatvnc pixman-1 aml) -lm
+
+RUN packaging/test/selftest-draw.sh
 
 FROM scratch AS export
 COPY --from=build /out /
