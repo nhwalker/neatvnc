@@ -2431,6 +2431,29 @@ static bool client_has_encoding(const struct nvnc_client* client,
 static void finish_fb_update(struct nvnc_client* client,
 		struct encoded_frame* frame)
 {
+	/* The encoder completed the frame without producing anything to send.
+	 * Give back the request and the damage the attempt consumed and clear
+	 * is_updating, or the client would wait for this update forever.
+	 *
+	 * Deliberately not pumping the request queue from here: with an
+	 * encoder that fails every frame, completing straight into the next
+	 * attempt becomes a hot loop. Left as is, the retry happens when the
+	 * next buffer, client message or fence arrives, so a broken encoder
+	 * costs one failed attempt per frame at most.
+	 */
+	if (!frame) {
+		struct nvnc* server = client->server;
+		client->n_pending_requests++;
+		if (server->display && server->display->buffer)
+			pixman_region_union_rect(&client->damage,
+					&client->damage, 0, 0,
+					server->display->buffer->width,
+					server->display->buffer->height);
+		client->is_updating = false;
+		DTRACE_PROBE1(neatvnc, update_fb_done, client);
+		return;
+	}
+
 	if (client->net_stream->state == STREAM_STATE_CLOSED)
 		goto complete;
 

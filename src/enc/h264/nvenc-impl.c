@@ -514,8 +514,17 @@ static void h264_encoder__on_work_done(void* handle)
 		return;
 	}
 
+	/* The encode failed and produced nothing. Report the empty result
+	 * rather than swallowing it: a consumer that hears nothing back keeps
+	 * the client marked as updating forever, and that client never
+	 * receives another frame.
+	 */
 	if (self->current_packet.len == 0) {
 		nvnc_log(NVNC_LOG_WARNING, "Whoops, encoded packet length is 0");
+
+		void* userdata = self->base.userdata;
+		h264_encoder__schedule_work(self);
+		self->base.on_packet_ready(NULL, 0, pts, userdata);
 		return;
 	}
 
