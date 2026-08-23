@@ -49,7 +49,18 @@ struct open_h264 {
 
 	int quality;
 	bool quality_changed;
+
+	/* Frames the encoder finished without producing any data, in a row.
+	 * See open_h264_encode().
+	 */
+	int failed_frames;
 };
+
+/* How many consecutive empty frames before the encoder is assumed dead and
+ * replaced. One is not enough -- a transient send_frame error should not cost
+ * a rebuild and the key frame that goes with it.
+ */
+#define OPEN_H264_FAILURE_LIMIT 3
 
 enum open_h264_flags {
 	OPEN_H264_FLAG_RESET_CONTEXT = 0,
@@ -70,6 +81,19 @@ static void open_h264_handle_packet(const void* data, size_t size, uint64_t pts,
 		void* userdata)
 {
 	struct open_h264* self = userdata;
+
+	/* The encoder finished the frame but produced nothing to send. Pass
+	 * the failure up as an empty result so the server completes the update
+	 * -- otherwise the client stays marked as updating and never receives
+	 * another frame. The counter lets open_h264_encode() replace an
+	 * encoder that keeps doing this.
+	 */
+	if (size == 0) {
+		self->failed_frames++;
+		encoder_finish_frame(&self->parent, NULL);
+		return;
+	}
+	self->failed_frames = 0;
 
 	// Let's not deplete the RAM if the client isn't pulling
 	if (self->pending.len > 100000000) {
@@ -165,9 +189,16 @@ static int open_h264_encode(struct encoder* enc, struct nvnc_fb* fb,
 	struct open_h264* self = open_h264(enc);
 	(void)damage;
 
+	/* A stream of empty frames means the encoder session is dead -- an
+	 * NVENC session can die at runtime in ways a create-time probe never
+	 * sees. Stand up a fresh encoder; if even that fails, report the
+	 * error so the caller backs off instead of feeding a corpse.
+	 */
 	if (fb->width != self->width || fb->height != self->height ||
 			fb->fourcc_format != self->format ||
-			self->quality_changed) {
+			self->quality_changed ||
+			self->failed_frames >= OPEN_H264_FAILURE_LIMIT) {
+		self->failed_frames = 0;
 		if (open_h264_resize(self, fb) < 0)
 			return -1;
 	}
