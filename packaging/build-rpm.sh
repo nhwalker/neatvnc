@@ -24,8 +24,11 @@ VERSION="$(sed -n "s/^\tversion: '\(.*\)',$/\1/p" "${REPO_DIR}/meson.build" | he
 PATCH_NAME=0001-h264-add-NVENC-encoder-implementation.patch
 
 # Everything the patch is allowed to touch. Packaging and CI live outside the
-# tarball, so they must not end up in the patch.
-PATCHED_PATHS=(src include meson.build meson_options.txt)
+# tarball, so they must not end up in the patch. test/ is included so that the
+# unit tests added alongside fixes actually run in the RPM's %check -- without
+# it the rpmbuild tree holds upstream's tests only and %check green-lights
+# without ever executing the new ones.
+PATCHED_PATHS=(src include test meson.build meson_options.txt)
 
 echo "Building ${NAME}-${VERSION} (base ${BASE_REF})"
 
