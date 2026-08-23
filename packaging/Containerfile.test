@@ -63,6 +63,10 @@ RUN chmod +x /usr/local/bin/rfb-h264-client /usr/local/bin/entrypoint
 # encoding is really being decoded.
 COPY packaging/test/e2e.html /usr/share/novnc/e2e.html
 
+# The viewer: a custom page built on noVNC's library rather than its stock UI,
+# which shows stream health and manages picture quality by itself.
+COPY packaging/test/viewer.html /usr/share/novnc/viewer.html
+
 ENV XDG_RUNTIME_DIR=/run/user/0 \
     WESTON_WIDTH=1280 \
     WESTON_HEIGHT=720 \

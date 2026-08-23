@@ -141,6 +141,18 @@ struct nvnc_client {
 	int32_t max_bitrate;
 	int32_t last_bitrate_update;
 
+	/* Stream health, reported by src/stats.c. The prev_ fields hold the
+	 * value at the last snapshot, so rates can be taken over the interval
+	 * rather than over the whole session.
+	 */
+	struct {
+		uint32_t id;
+		uint64_t frames_encoded;
+		uint64_t frames_dropped;
+		uint64_t prev_frames_encoded;
+		uint64_t prev_frames_dropped;
+	} stats;
+
 #ifdef HAVE_CRYPTO
 	struct crypto_key* apple_dh_secret;
 
@@ -181,6 +193,23 @@ struct nvnc {
 	struct cut_text ext_clipboard_provide_msg;
 	nvnc_desktop_layout_fn desktop_layout_fn;
 	struct nvnc_display* display;
+
+	/* See src/stats.c. Inactive unless NVNC_STATS_FILE is set. */
+	struct {
+		char* path;
+		struct aml_ticker* ticker;
+		uint64_t last_write_ms;
+		uint32_t next_client_id;
+
+		/* How many buffers the compositor has fed us. Without it there
+		 * is no way to tell an idle desktop from one the server cannot
+		 * keep up with: both deliver few frames, and only one of them
+		 * is a problem.
+		 */
+		uint64_t frames_offered;
+		uint64_t prev_frames_offered;
+	} stats;
+
 	struct {
 		struct nvnc_fb* buffer;
 		uint32_t width, height;

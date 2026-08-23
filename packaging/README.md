@@ -125,6 +125,7 @@ enough on its own because RSA-AES authentication also needs the username.
 | `NEATVNC_H264_NVENC_FORMAT` | `rgb` (default where the encoder accepts it) or `nv12`. `nv12` moves the colour conversion from NVENC to libswscale, where the coefficients are ours to choose — try it if colours look off |
 | `NVNC_LOG_LEVEL` | `error` \| `warning` (release default) \| `info` \| `debug` \| `trace`. `info` is the one that names the chosen encoder and encoding |
 | `NVNC_DEGRADE` | `framerate` (default) \| `quality`. Which knob congestion control turns when the link cannot keep up: hold quality and drop frames, or hold the frame rate and cap the bitrate. See below |
+| `NVNC_STATS_FILE` | Path to write a per-client stream health snapshot to, as JSON, every 500 ms. Unset by default, in which case nothing is written. See below |
 
 ## Checking that it is working
 
@@ -167,6 +168,72 @@ a fixed rate to emulate a constrained link:
 
 Reproduce with `packaging/test/congestion-server.c` and
 `packaging/test/rfb-throttle-client.py`.
+### Per-client stream health
+
+Setting `NVNC_STATS_FILE` makes neatvnc rewrite a JSON snapshot every 500 ms,
+holding one record per connected client:
+
+```json
+{ "version": 1, "timestamp_ms": 1787499969126, "interval_ms": 500,
+  "source_fps": 60.00,
+  "clients": [ { "id": 1, "address": "127.0.0.1:51924", "username": null,
+                 "encoding": "open-h264", "quality": 6,
+                 "frames_encoded": 1234, "frames_dropped": 12,
+                 "encoded_fps": 29.80, "dropped_fps": 0.40,
+                 "skip_fraction": 0.0130, "bandwidth_bps": 8400000,
+                 "min_rtt_us": 420, "inflight_bytes": 18000 } ] }
+```
+
+It is current state only, so its size is bounded by the number of clients and it
+cannot grow over time. Each write goes to a temporary file in the same directory
+and is renamed into place, so a reader sees either the previous snapshot or the
+next one and never a partial one. Rates cover the last interval rather than the
+session, because a session-long average stops responding to a change in
+conditions within a minute or two.
+
+`source_fps` is how fast the compositor is feeding buffers, and the per-client
+`encoded_fps` has to be read against it. Without it there is no way to tell an
+idle desktop from a server that cannot keep up: both deliver few frames, and
+only one of them is a problem.
+
+Two fields need a note. `quality` is what the client asked for, on the 0-9 scale
+the RFB quality pseudo-encodings use; 10 means the client expressed no
+preference at all, which the H.264 encoder treats as 6. `frames_dropped` counts
+frames the congestion limiter discarded, so together with `frames_encoded` it
+accounts for every frame the client could have had.
+
+**The file is not access controlled.** Anything that can read the path can see
+which clients are connected, from where, and as whom. In the test container it
+is deliberately written into the directory websockify serves, which means it is
+readable by anything that can reach the web port, before authenticating. That is
+a reasonable trade on a trusted network and nowhere else; leave the variable
+unset to turn it off.
+
+### The viewer page
+
+`viewer.html` is a custom page built on noVNC's library rather than its stock UI.
+It shows a gumball -- bright green for visually lossless, through green and
+amber, to red -- and it manages picture quality itself, with no manual control.
+
+The tier comes from the quality in effect and drops a step when the stream is
+not keeping up. Quality is lowered within a second of the delivered frame rate
+falling below target while the server is skipping, and raised one step at a time
+after ten seconds of clean running, floored at 3. The asymmetry matters: every
+change re-sends `SetEncodings`, which rebuilds the H.264 encoder and costs a key
+frame.
+
+Note what "not keeping up" means here: the delivered frame rate measured against
+what the compositor is actually producing. Neither half works alone. The skip
+ratio does not, because a compositor offering 60 Hz down a link that comfortably
+carries 30 fps skips half of every second forever on a stream that is fine. The
+delivered rate does not either, because an idle desktop delivers almost nothing
+and there is nothing wrong with it.
+
+Read together they cover both ways this goes wrong: a congested link, where
+frames are encoded and then discarded, and a server too slow to encode, where
+they are never produced at all. The second has no skipped frames to show for
+itself, so any rule that requires skipping misses it -- and lowering quality is
+exactly what would help.
 
 Running the server with `NVNC_LOG_LEVEL=info` logs which encoder was selected
 (`Using h264_nvenc for H.264 encoding`) and which encoding each client got

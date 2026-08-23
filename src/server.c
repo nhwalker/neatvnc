@@ -33,6 +33,7 @@
 #include "logging.h"
 #include "auth/auth.h"
 #include "bandwidth.h"
+#include "stats.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1083,6 +1084,7 @@ static void process_fb_update_requests(struct nvnc_client* client)
 	// handle, let's not put more load on it:
 	if (max_inflight > 0 && client->inflight_bytes > max_inflight) {
 		nvnc_log(NVNC_LOG_DEBUG, "Exceeded bandwidth limit. Dropping frame.");
+		client->stats.frames_dropped++;
 		return;
 	}
 
@@ -1109,6 +1111,7 @@ static void process_fb_update_requests(struct nvnc_client* client)
 			client, fb->pts);
 
 	if (encoder_encode(client->encoder, fb, &damage) >= 0) {
+		client->stats.frames_encoded++;
 		if (client->n_pending_requests > 0)
 			--client->n_pending_requests;
 	} else {
@@ -2160,6 +2163,7 @@ static void on_connection(void* obj)
 
 	client->server = server;
 	client->quality = 10; /* default to lossless */
+	client->stats.id = ++server->stats.next_client_id;
 	client->led_state = -1; /* trigger sending of initial state */
 	client->min_rtt = INT32_MAX;
 	client->bwe = bwe_create(INT32_MAX);
@@ -2384,6 +2388,8 @@ static struct nvnc* open_common(const char* address, uint16_t port,
 	if (aml_start(aml_get_default(), self->poll_handle) < 0)
 		goto poll_start_failure;
 
+	nvnc__stats_start(self);
+
 	return self;
 
 poll_start_failure:
@@ -2444,6 +2450,8 @@ EXPORT
 void nvnc_close(struct nvnc* self)
 {
 	self->is_closing = true;
+
+	nvnc__stats_stop(self);
 
 	nvnc_cleanup_fn cleanup = self->common.cleanup_fn;
 	if (cleanup)
