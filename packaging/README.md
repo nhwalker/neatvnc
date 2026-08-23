@@ -124,6 +124,7 @@ enough on its own because RSA-AES authentication also needs the username.
 | `NEATVNC_H264_NVENC_CODEC` | libavcodec encoder name, default `h264_nvenc`. Setting it to `libx264` runs the same code path on a software encoder, which is how CI tests this without a GPU |
 | `NEATVNC_H264_NVENC_FORMAT` | `rgb` (default where the encoder accepts it) or `nv12`. `nv12` moves the colour conversion from NVENC to libswscale, where the coefficients are ours to choose — try it if colours look off |
 | `NVNC_LOG_LEVEL` | `error` \| `warning` (release default) \| `info` \| `debug` \| `trace`. `info` is the one that names the chosen encoder and encoding |
+| `NVNC_DEGRADE` | `framerate` (default) \| `quality`. Which knob congestion control turns when the link cannot keep up: hold quality and drop frames, or hold the frame rate and cap the bitrate. See below |
 
 ## Checking that it is working
 
@@ -135,6 +136,37 @@ nvidia-smi --query-gpu=utilization.encoder --format=csv
 ffmpeg -hide_banner -encoders | grep nvenc     # h264_nvenc must be listed
 ls /usr/lib64/libnvidia-encode.so.1            # injected by the container toolkit
 ```
+
+### Degrading on quality instead of frame rate
+
+By default, congestion control holds picture quality fixed and drops frames when
+the link cannot keep up. That is the right answer for a desktop that is mostly
+still, and it is what every existing deployment gets.
+
+It is the wrong answer for a desktop showing video, or one whose main activity
+is scrolling a dense plot: the result is a slideshow at pristine quality rather
+than smooth motion at a quality that fits. Worse, on scrolling content the two
+interact badly — each dropped frame widens the displacement between the frames
+that survive, which pushes it past the encoder's motion search, which makes
+those frames far more expensive, which causes more dropping.
+
+Setting `NVNC_DEGRADE=quality` caps the encoder's bitrate from the bandwidth
+estimate instead. Frame dropping stays underneath it as the bound on latency,
+and takes over once the ceiling reaches its floor.
+
+Measured against a 1280x720 scrolling noise plot at 30 Hz, reading the socket at
+a fixed rate to emulate a constrained link:
+
+| Link | `framerate` (default) | `quality` |
+| --- | --- | --- |
+| 100 Mb/s | 30.0 fps | 30.0 fps |
+| 5 Mb/s | 2.0 fps | 30.0 fps |
+| 2 Mb/s | 6.9 fps | 30.0 fps |
+| 1 Mb/s | 17.2 fps | 29.2 fps |
+| 0.5 Mb/s | 8.4 fps | 20.9 fps |
+
+Reproduce with `packaging/test/congestion-server.c` and
+`packaging/test/rfb-throttle-client.py`.
 
 Running the server with `NVNC_LOG_LEVEL=info` logs which encoder was selected
 (`Using h264_nvenc for H.264 encoding`) and which encoding each client got

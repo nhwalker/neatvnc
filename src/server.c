@@ -76,6 +76,40 @@
 
 #define DEFAULT_NAME "Neat VNC"
 
+/* How much data the link may be carrying before a frame is dropped, over and
+ * above one round trip's worth: about one frame interval at 30 Hz.
+ */
+#define MAX_QUEUEING_DELAY 33.333e-3
+
+/* Ceiling on the encoder's bitrate when degrading on quality, scaled by pixel
+ * rate. 0.13 bits per pixel at 30 Hz is about 8 Mb/s for 1080p and 32 Mb/s for
+ * 4K: generous for a desktop, and still bounded on a link with room to spare.
+ */
+#define BITRATE_CEILING_BPP 0.13
+#define BITRATE_CEILING_FRAMERATE 30
+
+/* Below this a lower frame rate beats a worse picture, so the ceiling stops
+ * descending and frame dropping takes over.
+ */
+#define BITRATE_FLOOR 1000000
+
+/* Aim below what was measured, leaving the link room to drain. */
+#define BITRATE_SAFETY_FACTOR 0.9
+
+/* How fast the ceiling climbs back when nothing is queueing. */
+#define BITRATE_PROBE_FACTOR 1.5
+
+/* Smallest change worth rebuilding the encoder for. Every change costs a key
+ * frame, so this is doing real work.
+ */
+#define BITRATE_HYSTERESIS 0.25
+
+/* Backing off has to be quicker than probing forward, or every step up costs
+ * another period of congestion to discover.
+ */
+#define BITRATE_DECREASE_INTERVAL 1000000
+#define BITRATE_INCREASE_INTERVAL 5000000
+
 #define EXPORT __attribute__((visibility("default")))
 
 static int send_desktop_resize_rect(struct nvnc_client* client, uint16_t width,
@@ -323,6 +357,46 @@ static bool is_allowed_security_type(const struct nvnc* server, uint8_t type)
 		}
 	}
 	return false;
+}
+
+/* Which knob congestion control turns when the link cannot keep up.
+ *
+ * NVNC_DEGRADE=framerate is the default and the historical behaviour: hold
+ * quality fixed and drop frames. It is the right answer for a desktop that is
+ * mostly still, and it is what every existing deployment already gets.
+ *
+ * NVNC_DEGRADE=quality caps the encoder's bitrate from the bandwidth estimate
+ * instead, so the frame rate holds and the picture softens. That suits a
+ * desktop showing video or a continuously scrolling plot, where a slideshow at
+ * pristine quality is worse than smooth motion at a lower one. Frame dropping
+ * stays in place underneath it as the latency bound.
+ */
+enum degrade_mode {
+	DEGRADE_FRAMERATE = 0,
+	DEGRADE_QUALITY,
+};
+
+static enum degrade_mode get_degrade_mode(void)
+{
+	static enum degrade_mode mode;
+	static bool have_mode = false;
+
+	if (have_mode)
+		return mode;
+
+	const char* value = getenv("NVNC_DEGRADE");
+	if (value && strcmp(value, "quality") == 0) {
+		mode = DEGRADE_QUALITY;
+	} else {
+		if (value && value[0] && strcmp(value, "framerate") != 0)
+			nvnc_log(NVNC_LOG_WARNING,
+					"Unknown NVNC_DEGRADE value \"%s\"; using framerate",
+					value);
+		mode = DEGRADE_FRAMERATE;
+	}
+
+	have_mode = true;
+	return mode;
 }
 
 void update_min_rtt(struct nvnc_client* client)
@@ -881,6 +955,66 @@ static bool client_has_damage(struct nvnc_client* client)
 	return result;
 }
 
+/* Lower the encoder's ceiling when the link is backing up, and let it climb
+ * again when it is not. Only called in NVNC_DEGRADE=quality mode.
+ *
+ * The bandwidth estimate cannot be used as the ceiling directly. It measures
+ * what was delivered, which on an idle desktop is almost nothing; treating that
+ * as the available bandwidth would throttle a fast link for being asked to
+ * carry little. The in-flight backlog is what tells the two apart, so the
+ * ceiling only comes down when there is a queue to show for it.
+ */
+static void update_bitrate_cap(struct nvnc_client* client,
+		const struct nvnc_fb* fb, int bandwidth, int max_inflight)
+{
+	int ceiling = round((double)fb->width * fb->height *
+			BITRATE_CEILING_FRAMERATE * BITRATE_CEILING_BPP);
+	if (ceiling < BITRATE_FLOOR)
+		ceiling = BITRATE_FLOOR;
+
+	if (client->max_bitrate == 0) {
+		client->max_bitrate = ceiling;
+		return;
+	}
+
+	int32_t now = gettime_us(CLOCK_MONOTONIC);
+	int32_t age = now - client->last_bitrate_update;
+
+	/* A queue at least half the size of what the link is allowed to hold
+	 * is the signal that we are asking for more than it can carry.
+	 */
+	bool is_congested = max_inflight > 0 && bandwidth > 0 &&
+		client->inflight_bytes > max_inflight / 2;
+
+	int32_t min_age = is_congested ? BITRATE_DECREASE_INTERVAL :
+		BITRATE_INCREASE_INTERVAL;
+	if (age >= 0 && age < min_age)
+		return;
+
+	double target = is_congested
+		? bandwidth * 8.0 * BITRATE_SAFETY_FACTOR  /* bytes/s to bits/s */
+		: client->max_bitrate * BITRATE_PROBE_FACTOR;
+
+	if (target > ceiling)
+		target = ceiling;
+	if (target < BITRATE_FLOOR)
+		target = BITRATE_FLOOR;
+
+	double change = fabs(target - client->max_bitrate) /
+		(double)client->max_bitrate;
+	if (change < BITRATE_HYSTERESIS)
+		return;
+
+	nvnc_log(NVNC_LOG_DEBUG,
+			"Bitrate ceiling %.2f -> %.2f Mb/s (%s, %d bytes inflight of %d)",
+			client->max_bitrate * 1e-6, target * 1e-6,
+			is_congested ? "congested" : "probing",
+			client->inflight_bytes, max_inflight);
+
+	client->max_bitrate = round(target);
+	client->last_bitrate_update = now;
+}
+
 static void process_fb_update_requests(struct nvnc_client* client)
 {
 	struct nvnc* server = client->server;
@@ -928,24 +1062,28 @@ static void process_fb_update_requests(struct nvnc_client* client)
 
 	// Bytes per second, as measured from fence round trips.
 	int bandwidth = bwe_get_estimate(client->bwe);
+	int max_inflight = 0;
+
 	if (bandwidth > 0) {
 		/* What the link can carry in one round trip, plus a frame
-		 * interval's worth of slack. The delay budget multiplies the
-		 * bandwidth; it used to be added to a byte count, which is
-		 * dimensionally meaningless and left the budget contributing
-		 * nothing, so frames were dropped far more eagerly than
-		 * intended.
+		 * interval's worth of slack.
 		 */
-		double max_delay = 33.333e-3;
-		int max_inflight = round((max_delay +
+		max_inflight = round((MAX_QUEUEING_DELAY +
 				1e-6 * client->min_rtt) * bandwidth);
+	}
 
-		// If there is already more data inflight than the link can
-		// handle, let's not put more load on it:
-		if (client->inflight_bytes > max_inflight) {
-			nvnc_log(NVNC_LOG_DEBUG, "Exceeded bandwidth limit. Dropping frame.");
-			return;
-		}
+	/* Deliberately ahead of the frame drop below: congestion is exactly
+	 * when frames get dropped, and the ceiling still has to keep moving
+	 * while that is happening.
+	 */
+	if (get_degrade_mode() == DEGRADE_QUALITY)
+		update_bitrate_cap(client, fb, bandwidth, max_inflight);
+
+	// If there is already more data inflight than the link can
+	// handle, let's not put more load on it:
+	if (max_inflight > 0 && client->inflight_bytes > max_inflight) {
+		nvnc_log(NVNC_LOG_DEBUG, "Exceeded bandwidth limit. Dropping frame.");
+		return;
 	}
 
 	if (!ensure_encoder(client, fb))
@@ -961,6 +1099,7 @@ static void process_fb_update_requests(struct nvnc_client* client)
 	client->formats_changed = false;
 
 	encoder_set_quality(client->encoder, client->quality);
+	encoder_set_max_bitrate(client->encoder, client->max_bitrate);
 	encoder_set_output_format(client->encoder, &client->pixfmt);
 
 	client->encoder->on_done = on_encode_frame_done;

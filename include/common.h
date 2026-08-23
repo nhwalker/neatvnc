@@ -135,6 +135,12 @@ struct nvnc_client {
 	struct bwe* bwe;
 	int32_t inflight_bytes;
 
+	/* Ceiling handed to the encoder, in bits per second, and when it last
+	 * moved. Zero unless NVNC_DEGRADE=quality. See update_bitrate_cap().
+	 */
+	int32_t max_bitrate;
+	int32_t last_bitrate_update;
+
 #ifdef HAVE_CRYPTO
 	struct crypto_key* apple_dh_secret;
 

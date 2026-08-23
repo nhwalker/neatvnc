@@ -261,7 +261,7 @@ static void open_h264_set_max_bitrate(struct encoder* enc, int max_bitrate)
 	 * control mode and always warrants a rebuild.
 	 */
 	if (self->max_bitrate != 0 && max_bitrate != 0) {
-		double change = fabs(max_bitrate - self->max_bitrate) /
+		double change = fabs((double)max_bitrate - self->max_bitrate) /
 			(double)self->max_bitrate;
 		if (change < BITRATE_HYSTERESIS)
 			return;
