@@ -124,6 +124,29 @@ static const char* nvenc_codec_name(void)
 	return (name && name[0]) ? name : DEFAULT_CODEC_NAME;
 }
 
+/* NVENC's preset is where its search effort lives: unlike libx264 it exposes no
+ * motion estimation controls at all, so p1 through p7 is the only way to ask it
+ * to look harder. That matters for scrolling content, where too narrow a search
+ * makes prediction fail and the picture get coded from scratch -- on the
+ * software path that costs a factor of twenty-five, and whether NVENC has the
+ * same cliff at p1 is not something that can be answered without the hardware.
+ *
+ * The defaults are unchanged, so this alters nothing until somebody sets it.
+ * It exists so the ladder can be walked on a machine with a GPU without
+ * rebuilding.
+ */
+static const char* nvenc_preset(void)
+{
+	const char* value = getenv("NEATVNC_H264_NVENC_PRESET");
+	return (value && value[0]) ? value : "p1";
+}
+
+static const char* nvenc_tune(void)
+{
+	const char* value = getenv("NEATVNC_H264_NVENC_TUNE");
+	return (value && value[0]) ? value : "ull";
+}
+
 static bool codec_accepts_pix_fmt(const AVCodec* codec,
 		enum AVPixelFormat wanted)
 {
@@ -246,10 +269,20 @@ static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
 		/* Lowest latency preset, constant quantiser, no frame
 		 * reordering and no output delay. forced-idr makes
 		 * AV_PICTURE_TYPE_I produce a real IDR, which the open-h264
-		 * encoding relies on for context resets.
+		 * encoding relies on for context resets. The preset and tune
+		 * are overridable; see nvenc_preset().
 		 */
-		try_set_option(self, "preset", "p1");
-		try_set_option(self, "tune", "ull");
+		try_set_option(self, "preset", nvenc_preset());
+		try_set_option(self, "tune", nvenc_tune());
+
+		/* Two-pass motion estimation. Off by default because it costs
+		 * GPU time and its value here is unmeasured; it is the other
+		 * knob worth trying if a fast scroll turns out to defeat the
+		 * search at whichever preset is in use.
+		 */
+		const char* multipass = getenv("NEATVNC_H264_NVENC_MULTIPASS");
+		if (multipass && multipass[0])
+			try_set_option(self, "multipass", multipass);
 		try_set_option(self, "rc", "constqp");
 		try_set_option(self, "qp", quality_str);
 		try_set_option(self, "zerolatency", "1");
@@ -273,7 +306,7 @@ static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
 		 * frame the displacement leaves the search window, prediction
 		 * fails outright, and the encoder codes the picture from
 		 * scratch instead -- on dense content that is the difference
-		 * between eight megabits a second and nearly three hundred.
+		 * between eight megabits a second and three hundred.
 		 *
 		 * The search pattern is what matters, not the range: widening
 		 * merange alone changes nothing, because the diamond cannot

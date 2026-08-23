@@ -123,6 +123,9 @@ enough on its own because RSA-AES authentication also needs the username.
 | `NEATVNC_H264_ENCODER` | `v4l2m2m` \| `vaapi` \| `nvenc` \| `auto` (default) — pins encoder selection |
 | `NEATVNC_H264_NVENC_CODEC` | libavcodec encoder name, default `h264_nvenc`. Setting it to `libx264` runs the same code path on a software encoder, which is how CI tests this without a GPU |
 | `NEATVNC_H264_NVENC_FORMAT` | `rgb` (default where the encoder accepts it) or `nv12`. `nv12` moves the colour conversion from NVENC to libswscale, where the coefficients are ours to choose — try it if colours look off |
+| `NEATVNC_H264_NVENC_PRESET` | NVENC preset, default `p1`. Search effort lives here: NVENC exposes no motion estimation controls, so `p1`–`p7` is the only way to ask it to look harder. See below |
+| `NEATVNC_H264_NVENC_TUNE` | NVENC tuning, default `ull` |
+| `NEATVNC_H264_NVENC_MULTIPASS` | NVENC multipass mode, unset by default. Two-pass motion estimation, the other knob worth trying if a fast scroll defeats the search |
 | `NVNC_LOG_LEVEL` | `error` \| `warning` (release default) \| `info` \| `debug` \| `trace`. `info` is the one that names the chosen encoder and encoding |
 | `NVNC_STATS_FILE` | Path to write a per-client stream health snapshot to, as JSON, every 500 ms. Unset by default, in which case nothing is written. See below |
 
@@ -164,6 +167,13 @@ neither better nor worse.
 
 It is the search pattern that matters, not the range. Widening `merange` under
 the diamond search changes nothing, because a diamond cannot traverse that far.
+
+**None of this is settled for NVENC.** It exposes no motion estimation controls
+at all — `preset` and `multipass` are the only levers — and whether it has the
+same cliff at `p1` cannot be answered without the hardware. That is what
+`NEATVNC_H264_NVENC_PRESET` is for: walk `p1` through `p7` against a fast scroll
+on a machine with a GPU and find out. The defaults are unchanged, so nothing
+moves until somebody sets it.
 
 One thing worth knowing about the content, which neatvnc can do nothing about:
 odd scroll displacements cost far more than even ones. Under 4:2:0 the chroma
