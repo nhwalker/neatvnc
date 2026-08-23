@@ -26,6 +26,7 @@ RUN dnf -y install \
         ninja-build \
         pkgconf-pkg-config \
         aml-devel \
+        ffmpeg \
         ffmpeg-devel \
         gmp-devel \
         gnutls-devel \
@@ -61,6 +62,11 @@ RUN gcc -O2 -o /usr/local/bin/nvnc-draw examples/draw.c -DAML_UNSTABLE_API=1 \
         $(pkg-config --cflags --libs neatvnc pixman-1 aml) -lm
 
 RUN packaging/test/selftest-draw.sh
+
+# Pixel-level test: decodes the stream and compares it against a known pattern,
+# which is what catches a stride or channel-order mistake. Also collects
+# several frames, so P-frames are exercised and not just the first keyframe.
+RUN packaging/test/selftest-pattern.sh
 
 FROM scratch AS export
 COPY --from=build /out /

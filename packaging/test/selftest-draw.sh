@@ -38,6 +38,15 @@ for _ in $(seq 1 100); do
 	sleep 0.2
 done
 
+# Something else may already own the port -- notably when the container shares
+# the host's network namespace -- in which case the connect above succeeds
+# against the wrong server.
+if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+	echo "the server is not running; is port ${PORT} already taken?" >&2
+	cat "${LOG}" >&2
+	exit 1
+fi
+
 rc=0
 python3 "${SCRIPT_DIR}/rfb-h264-client.py" --port "${PORT}" || rc=$?
 
