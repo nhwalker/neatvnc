@@ -133,7 +133,7 @@ static void probe_h264_encoder(uint32_t format)
 		return;
 
 	struct h264_encoder *encoder = h264_encoder_create(1920, 1080, format,
-			5);
+			5, 0);
 	cached_h264_encoder_result = encoder ? 1 : -1;
 	cached_h264_encoder_format = format;
 	cached_h264_encoder_accepts_sw_frames =

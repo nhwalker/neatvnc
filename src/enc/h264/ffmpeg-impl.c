@@ -511,8 +511,13 @@ static int find_render_node(char *node, size_t maxlen) {
 }
 
 static struct h264_encoder* h264_encoder_ffmpeg_create(uint32_t width,
-		uint32_t height, uint32_t format, int quality)
+		uint32_t height, uint32_t format, int quality, int max_bitrate)
 {
+	/* Rate control is left to the VAAPI driver's own defaults here; the
+	 * congestion loop only drives the NVENC implementation.
+	 */
+	(void)max_bitrate;
+
 	int rc;
 
 	struct h264_encoder_ffmpeg* self = calloc(1, sizeof(*self));

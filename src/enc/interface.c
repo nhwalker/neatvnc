@@ -103,6 +103,12 @@ void encoder_set_quality(struct encoder* self, int value)
 		self->impl->set_quality(self, value);
 }
 
+void encoder_set_max_bitrate(struct encoder* self, int max_bitrate)
+{
+	if (self->impl->set_max_bitrate)
+		self->impl->set_max_bitrate(self, max_bitrate);
+}
+
 int encoder_encode(struct encoder* self, struct nvnc_fb* fb,
 		struct pixman_region16* damage)
 {

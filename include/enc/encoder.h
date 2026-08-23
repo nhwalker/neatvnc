@@ -39,6 +39,12 @@ struct encoder_impl {
 			const struct rfb_pixel_format*);
 	void (*set_quality)(struct encoder*, int quality);
 
+	/* Ceiling on the encoded bitrate in bits per second, or zero for
+	 * none. Advisory: an encoder that has no way to honour it may ignore
+	 * it, and one that does may still overshoot briefly.
+	 */
+	void (*set_max_bitrate)(struct encoder*, int max_bitrate);
+
 	int (*encode)(struct encoder*, struct nvnc_fb* fb,
 			struct pixman_region16* damage);
 
@@ -78,6 +84,7 @@ enum encoder_kind encoder_get_kind(const struct encoder* self);
 void encoder_set_output_format(struct encoder* self,
 		const struct rfb_pixel_format*);
 void encoder_set_quality(struct encoder* self, int value);
+void encoder_set_max_bitrate(struct encoder* self, int max_bitrate);
 
 int encoder_encode(struct encoder* self, struct nvnc_fb* fb,
 		struct pixman_region16* damage);

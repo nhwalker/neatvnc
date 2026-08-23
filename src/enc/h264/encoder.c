@@ -46,14 +46,14 @@ static bool impl_is_selected(const char* name)
 }
 
 struct h264_encoder* h264_encoder_create(uint32_t width, uint32_t height,
-		uint32_t format, int quality)
+		uint32_t format, int quality, int max_bitrate)
 {
 	struct h264_encoder* encoder = NULL;
 
 #ifdef HAVE_V4L2
 	if (impl_is_selected("v4l2m2m")) {
 		encoder = h264_encoder_v4l2m2m_impl.create(width, height,
-				format, quality);
+				format, quality, max_bitrate);
 		if (encoder) {
 			return encoder;
 		}
@@ -63,7 +63,7 @@ struct h264_encoder* h264_encoder_create(uint32_t width, uint32_t height,
 #ifdef HAVE_FFMPEG
 	if (impl_is_selected("vaapi")) {
 		encoder = h264_encoder_ffmpeg_impl.create(width, height, format,
-				quality);
+				quality, max_bitrate);
 		if (encoder) {
 			return encoder;
 		}
@@ -73,7 +73,7 @@ struct h264_encoder* h264_encoder_create(uint32_t width, uint32_t height,
 #ifdef HAVE_NVENC
 	if (impl_is_selected("nvenc")) {
 		encoder = h264_encoder_nvenc_impl.create(width, height, format,
-				quality);
+				quality, max_bitrate);
 		if (encoder) {
 			return encoder;
 		}

@@ -56,6 +56,14 @@
  */
 #define NOMINAL_FRAMERATE 60
 
+/* How much of the bitrate ceiling the encoder may hold in its buffer, as a
+ * divisor of the ceiling: 10 gives a tenth of a second. The buffer is what
+ * lets a key frame or a scene change spend above the average, so too small a
+ * value flattens quality, and too large a one lets a burst sit in the link's
+ * queue and shows up as latency. A tenth of a second is a few frames.
+ */
+#define VBV_BUFFER_DIVISOR 10
+
 struct fb_queue_entry {
 	struct nvnc_fb* fb;
 	TAILQ_ENTRY(fb_queue_entry) link;
@@ -203,7 +211,7 @@ static void try_set_option(struct h264_encoder_nvenc* self, const char* key,
 }
 
 static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
-		const AVCodec* codec, int quality)
+		const AVCodec* codec, int quality, int max_bitrate)
 {
 	self->codec_ctx = avcodec_alloc_context3(codec);
 	if (!self->codec_ctx)
@@ -242,6 +250,23 @@ static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
 	char quality_str[16];
 	snprintf(quality_str, sizeof(quality_str), "%d", quality);
 
+	/* Capped quality rather than constant bitrate. The quantiser above is
+	 * still what decides how many bits a frame gets, so a screen that is
+	 * not changing keeps costing almost nothing; the ceiling only binds
+	 * when the picture is busy enough to ask for more than the link can
+	 * carry. Constant bitrate would spend the whole allowance on a
+	 * motionless desktop, which is the one thing this stack is good at
+	 * avoiding.
+	 *
+	 * Both libx264 and NVENC read the ceiling from these two fields --
+	 * libx264 as vbv-maxrate and vbv-bufsize, NVENC as its VBV rate
+	 * control parameters -- so only the rate control mode differs below.
+	 */
+	if (max_bitrate > 0) {
+		c->rc_max_rate = max_bitrate;
+		c->rc_buffer_size = max_bitrate / VBV_BUFFER_DIVISOR;
+	}
+
 	if (strstr(codec->name, "nvenc")) {
 		/* Lowest latency preset, constant quantiser, no frame
 		 * reordering and no output delay. forced-idr makes
@@ -250,8 +275,18 @@ static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
 		 */
 		try_set_option(self, "preset", "p1");
 		try_set_option(self, "tune", "ull");
-		try_set_option(self, "rc", "constqp");
-		try_set_option(self, "qp", quality_str);
+
+		if (max_bitrate > 0) {
+			/* Constant quantiser has no notion of a ceiling, so a
+			 * capped encoder has to run variable bitrate with the
+			 * quantiser as its target instead.
+			 */
+			try_set_option(self, "rc", "vbr");
+			try_set_option(self, "cq", quality_str);
+		} else {
+			try_set_option(self, "rc", "constqp");
+			try_set_option(self, "qp", quality_str);
+		}
 		try_set_option(self, "zerolatency", "1");
 		try_set_option(self, "delay", "0");
 		try_set_option(self, "forced-idr", "1");
@@ -536,7 +571,7 @@ static void h264_encoder__on_work_done(void* handle)
 }
 
 static struct h264_encoder* h264_encoder_nvenc_create(uint32_t width,
-		uint32_t height, uint32_t format, int quality)
+		uint32_t height, uint32_t format, int quality, int max_bitrate)
 {
 	struct h264_encoder_nvenc* self = calloc(1, sizeof(*self));
 	if (!self)
@@ -577,7 +612,8 @@ static struct h264_encoder* h264_encoder_nvenc_create(uint32_t width,
 	if (h264_encoder__init_conversion(self) < 0)
 		goto conversion_failure;
 
-	if (h264_encoder__init_codec_context(self, codec, quality) < 0)
+	if (h264_encoder__init_codec_context(self, codec, quality,
+				max_bitrate) < 0)
 		goto codec_context_failure;
 
 	int rc = avcodec_open2(self->codec_ctx, codec, NULL);
@@ -589,7 +625,13 @@ static struct h264_encoder* h264_encoder_nvenc_create(uint32_t width,
 		goto avcodec_open_failure;
 	}
 
-	nvnc_log(NVNC_LOG_INFO, "Using %s for H.264 encoding", codec_name);
+	if (max_bitrate > 0)
+		nvnc_log(NVNC_LOG_INFO,
+				"Using %s for H.264 encoding, capped at %.2f Mb/s",
+				codec_name, max_bitrate * 1e-6);
+	else
+		nvnc_log(NVNC_LOG_INFO, "Using %s for H.264 encoding",
+				codec_name);
 
 	return &self->base;
 

@@ -26,8 +26,13 @@ typedef void (*h264_encoder_packet_handler_fn)(const void* payload, size_t size,
 		uint64_t pts, void* userdata);
 
 struct h264_encoder_impl {
+	/* max_bitrate is a ceiling in bits per second, or zero for none. Rate
+	 * control has to be configured before the codec is opened, which is
+	 * why it is a creation parameter rather than a setter: changing it
+	 * means building a new encoder.
+	 */
 	struct h264_encoder* (*create)(uint32_t width, uint32_t height,
-			uint32_t format, int quality);
+			uint32_t format, int quality, int max_bitrate);
 	void (*destroy)(struct h264_encoder*);
 	void (*feed)(struct h264_encoder*, struct nvnc_fb*);
 
@@ -45,7 +50,7 @@ struct h264_encoder {
 };
 
 struct h264_encoder* h264_encoder_create(uint32_t width, uint32_t height,
-		uint32_t format, int quality);
+		uint32_t format, int quality, int max_bitrate);
 
 void h264_encoder_destroy(struct h264_encoder*);
 

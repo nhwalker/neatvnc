@@ -49,7 +49,17 @@ struct open_h264 {
 
 	int quality;
 	bool quality_changed;
+
+	int max_bitrate;
+	bool max_bitrate_changed;
 };
+
+/* How far the ceiling has to move before it is worth acting on. Every change
+ * costs an encoder rebuild and therefore a key frame, so small adjustments are
+ * not worth having. The congestion loop that drives this applies a wider band
+ * of its own; this is only a backstop against a caller that does not.
+ */
+#define BITRATE_HYSTERESIS 0.1
 
 enum open_h264_flags {
 	OPEN_H264_FLAG_RESET_CONTEXT = 0,
@@ -136,7 +146,8 @@ static int open_h264_resize(struct open_h264* self, struct nvnc_fb* fb)
 	int quality = 51 - round((50.0 / 9.0) * (float)self->quality);
 
 	struct h264_encoder* encoder = h264_encoder_create(fb->width,
-			fb->height, fb->fourcc_format, quality);
+			fb->height, fb->fourcc_format, quality,
+			self->max_bitrate);
 	if (!encoder)
 		return -1;
 
@@ -153,6 +164,7 @@ static int open_h264_resize(struct open_h264* self, struct nvnc_fb* fb)
 	self->format = fb->fourcc_format;
 	self->needs_reset = true;
 	self->quality_changed = false;
+	self->max_bitrate_changed = false;
 
 	return 0;
 }
@@ -167,7 +179,7 @@ static int open_h264_encode(struct encoder* enc, struct nvnc_fb* fb,
 
 	if (fb->width != self->width || fb->height != self->height ||
 			fb->fourcc_format != self->format ||
-			self->quality_changed) {
+			self->quality_changed || self->max_bitrate_changed) {
 		if (open_h264_resize(self, fb) < 0)
 			return -1;
 	}
@@ -232,10 +244,38 @@ static void open_h264_set_quality(struct encoder* enc, int value)
 	self->quality = value;
 }
 
+/* There is no way to change rate control on a running encoder, so this joins
+ * the same rebuild path that a quality change takes.
+ */
+static void open_h264_set_max_bitrate(struct encoder* enc, int max_bitrate)
+{
+	struct open_h264* self = open_h264(enc);
+
+	if (max_bitrate < 0)
+		max_bitrate = 0;
+
+	if (max_bitrate == self->max_bitrate)
+		return;
+
+	/* Going from capped to uncapped, or the other way, changes the rate
+	 * control mode and always warrants a rebuild.
+	 */
+	if (self->max_bitrate != 0 && max_bitrate != 0) {
+		double change = fabs(max_bitrate - self->max_bitrate) /
+			(double)self->max_bitrate;
+		if (change < BITRATE_HYSTERESIS)
+			return;
+	}
+
+	self->max_bitrate = max_bitrate;
+	self->max_bitrate_changed = true;
+}
+
 struct encoder_impl encoder_impl_open_h264 = {
 	.flags = ENCODER_IMPL_FLAG_IGNORES_DAMAGE,
 	.destroy = open_h264_destroy,
 	.encode = open_h264_encode,
 	.request_key_frame = open_h264_request_keyframe,
 	.set_quality = open_h264_set_quality,
+	.set_max_bitrate = open_h264_set_max_bitrate,
 };
