@@ -17,6 +17,9 @@
 #include "enc/h264-encoder.h"
 #include "config.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 #ifdef HAVE_FFMPEG
 extern struct h264_encoder_impl h264_encoder_ffmpeg_impl;
 #endif
@@ -25,22 +28,55 @@ extern struct h264_encoder_impl h264_encoder_ffmpeg_impl;
 extern struct h264_encoder_impl h264_encoder_v4l2m2m_impl;
 #endif
 
+#ifdef HAVE_NVENC
+extern struct h264_encoder_impl h264_encoder_nvenc_impl;
+#endif
+
+/* Setting NEATVNC_H264_ENCODER to one of "v4l2m2m", "vaapi" or "nvenc"
+ * restricts encoder selection to that implementation. Anything else, including
+ * an unset variable, tries them all in order.
+ */
+static bool impl_is_selected(const char* name)
+{
+	const char* selection = getenv("NEATVNC_H264_ENCODER");
+	if (!selection || !selection[0] || strcmp(selection, "auto") == 0)
+		return true;
+
+	return strcmp(selection, name) == 0;
+}
+
 struct h264_encoder* h264_encoder_create(uint32_t width, uint32_t height,
 		uint32_t format, int quality)
 {
 	struct h264_encoder* encoder = NULL;
 
 #ifdef HAVE_V4L2
-	encoder = h264_encoder_v4l2m2m_impl.create(width, height, format, quality);
-	if (encoder) {
-		return encoder;
+	if (impl_is_selected("v4l2m2m")) {
+		encoder = h264_encoder_v4l2m2m_impl.create(width, height,
+				format, quality);
+		if (encoder) {
+			return encoder;
+		}
 	}
 #endif
 
 #ifdef HAVE_FFMPEG
-	encoder = h264_encoder_ffmpeg_impl.create(width, height, format, quality);
-	if (encoder) {
-		return encoder;
+	if (impl_is_selected("vaapi")) {
+		encoder = h264_encoder_ffmpeg_impl.create(width, height, format,
+				quality);
+		if (encoder) {
+			return encoder;
+		}
+	}
+#endif
+
+#ifdef HAVE_NVENC
+	if (impl_is_selected("nvenc")) {
+		encoder = h264_encoder_nvenc_impl.create(width, height, format,
+				quality);
+		if (encoder) {
+			return encoder;
+		}
 	}
 #endif
 
@@ -72,4 +108,9 @@ void h264_encoder_feed(struct h264_encoder* self, struct nvnc_fb* fb)
 void h264_encoder_request_keyframe(struct h264_encoder* self)
 {
 	self->next_frame_should_be_keyframe = true;
+}
+
+bool h264_encoder_accepts_sw_frames(const struct h264_encoder* self)
+{
+	return self->impl->accepts_sw_frames;
 }

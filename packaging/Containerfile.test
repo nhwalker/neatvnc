@@ -1,0 +1,76 @@
+# A ubi10 image that runs Weston's VNC backend against the patched neatvnc,
+# with websockify and noVNC in front so a browser can connect.
+#
+#   docker build -f packaging/Containerfile.build --target export -o rpms .
+#   docker build -f packaging/Containerfile.test -t neatvnc-nvenc-test .
+#   docker run --rm --gpus all \
+#       -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
+#       -e VNC_PASSWORD=secret -p 6080:6080 neatvnc-nvenc-test
+#
+# Then open https://localhost:6080/vnc.html and log in as root. Two details
+# matter:
+#
+#  * HTTPS is not optional. noVNC only offers the H.264 encoding when the
+#    WebCodecs VideoDecoder API exists, and that API is restricted to secure
+#    contexts, so plain HTTP silently downgrades you to Tight.
+#  * Weston authenticates through PAM and insists the VNC username match the
+#    user it runs as, hence 'root' plus VNC_PASSWORD.
+
+FROM registry.access.redhat.com/ubi10/ubi:latest
+
+ARG NOVNC_VERSION=v1.7.0
+
+# Extra CA certificates for TLS-inspecting proxies. Empty by default, in which
+# case this is a no-op; see packaging/ca-certificates/README.md.
+COPY packaging/ca-certificates/ /etc/pki/ca-trust/source/anchors/
+RUN update-ca-trust extract
+
+COPY packaging/repos.sh /tmp/repos.sh
+RUN bash /tmp/repos.sh && rm -f /tmp/repos.sh
+
+# EPEL ships neatvnc 0.9.0; make sure nothing pulls it in over ours.
+RUN printf 'excludepkgs=neatvnc,neatvnc-devel\n' >> /etc/yum.repos.d/epel.repo
+
+RUN dnf -y install \
+        git \
+        weston \
+        weston-libs \
+        weston-demo \
+        ffmpeg-libs \
+        python3-websockify \
+        openssl \
+        procps-ng \
+    && dnf clean all
+
+# EPEL's noVNC is 1.5.0, which has no H.264 decoder at all -- support for the
+# open-h264 encoding first shipped in noVNC 1.6.0, and 1.7.0 improved its
+# detection. Ship a new enough one instead of the packaged one.
+RUN git clone --depth 1 --branch "${NOVNC_VERSION}" \
+        https://github.com/novnc/noVNC /usr/share/novnc \
+    && rm -rf /usr/share/novnc/.git \
+    && test -f /usr/share/novnc/core/decoders/h264.js
+
+COPY rpms/neatvnc-0.9.1-*.x86_64.rpm /tmp/
+RUN rpm -Uvh --force /tmp/neatvnc-0.9.1-*.x86_64.rpm \
+    && rm -f /tmp/*.rpm \
+    && test -e /usr/lib64/libneatvnc.so.0
+
+COPY packaging/test/rfb-h264-client.py /usr/local/bin/rfb-h264-client
+COPY packaging/test/entrypoint.sh /usr/local/bin/entrypoint
+RUN chmod +x /usr/local/bin/rfb-h264-client /usr/local/bin/entrypoint
+
+ENV XDG_RUNTIME_DIR=/run/user/0 \
+    WESTON_WIDTH=1280 \
+    WESTON_HEIGHT=720 \
+    VNC_PORT=5900 \
+    WEB_PORT=6080 \
+    NEATVNC_H264_ENCODER=nvenc
+
+# NVENC needs the 'video' driver capability, which is what injects
+# libnvidia-encode.so.1 into the container.
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+
+EXPOSE 6080
+
+ENTRYPOINT ["/usr/local/bin/entrypoint"]
+CMD ["serve"]

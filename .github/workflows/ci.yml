@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+
+jobs:
+  native-build:
+    name: Build and unit test (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config gcc \
+            libavcodec-dev libavfilter-dev libavutil-dev libswscale-dev \
+            libdrm-dev libgbm-dev libpixman-1-dev libgnutls28-dev \
+            nettle-dev libturbojpeg0-dev zlib1g-dev libpng-dev
+
+      # aml is not packaged on Ubuntu, and neatvnc's meson already falls back
+      # to a subproject when it is not found on the system.
+      - name: Fetch aml
+        run: git clone --depth 1 --branch v0.3.0 https://github.com/any1/aml.git subprojects/aml
+
+      - name: Configure with NVENC enabled
+        run: meson setup build -Dnvenc=enabled -Dh264=enabled -Dtests=true -Dexamples=true
+
+      - name: Build
+        run: ninja -C build
+
+      - name: Unit tests
+        run: meson test -C build --print-errorlogs
+
+      # Exercises the software-frame H.264 path against a software encoder,
+      # which is the whole new code path minus NVENC itself.
+      - name: Integration test (open-h264 over RFB)
+        run: |
+          NVNC_LOG_LEVEL=debug \
+          NEATVNC_H264_ENCODER=nvenc \
+          NEATVNC_H264_NVENC_CODEC=libx264 \
+            ./build/examples/draw > /tmp/draw.log 2>&1 &
+          for _ in $(seq 1 100); do
+            (exec 3<>/dev/tcp/127.0.0.1/5900) 2>/dev/null && break
+            sleep 0.2
+          done
+          rc=0
+          python3 packaging/test/rfb-h264-client.py || rc=$?
+          echo "=== server log ==="
+          cat /tmp/draw.log
+          exit $rc
+
+      # The VAAPI-only configuration must keep building exactly as before.
+      - name: Configure and build with NVENC disabled
+        run: |
+          meson setup build-no-nvenc -Dnvenc=disabled -Dh264=enabled -Dtests=true
+          ninja -C build-no-nvenc
+          meson test -C build-no-nvenc --print-errorlogs
+
+  rpm:
+    name: RPM and containers (ubi10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # build-rpm.sh generates the patch against the upstream release
+          # commit, so the full history has to be present.
+          fetch-depth: 0
+
+      # Builds the RPM, runs %check, verifies the library is still a drop-in
+      # for the distro package and runs the open-h264 integration test against
+      # the installed library.
+      - name: Build RPM in ubi10
+        run: docker build -f packaging/Containerfile.build --target export -o rpms .
+
+      - name: Show what was built
+        run: |
+          ls -l rpms/
+          for f in rpms/*.rpm; do echo "--- $f"; rpm -qip "$f" 2>/dev/null || true; done
+
+      - name: Build the Weston + noVNC test image
+        run: docker build -f packaging/Containerfile.test -t neatvnc-nvenc-test .
+
+      - name: Smoke test the test image
+        run: |
+          docker run --rm -e VNC_PASSWORD=ci-smoke-test neatvnc-nvenc-test selftest
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neatvnc-rpms
+          path: rpms/*.rpm
+          if-no-files-found: error
