@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Desktop</title>
+<!--
+  A minimal noVNC viewer that reports stream health and manages picture quality
+  on its own.
+
+  Two things distinguish it from the stock noVNC page. It shows a gumball whose
+  colour says how good the stream currently is, and it has no quality control of
+  its own -- quality is driven entirely by a control loop here in the page,
+  reacting to what the server reports about frames it could not send.
+
+  The signal comes from status.json, which neatvnc writes into the directory
+  websockify serves. See src/stats.c.
+-->
+<style>
+  :root {
+    --ink: #e8edf2;
+    --muted: #8b98a5;
+    --panel: rgba(18, 24, 30, 0.86);
+    --edge: rgba(255, 255, 255, 0.12);
+  }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0c1116;
+    color: var(--ink);
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow: hidden;
+  }
+  #screen { width: 100vw; height: 100vh; }
+
+  #hud {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px 8px 10px;
+    background: var(--panel);
+    border: 1px solid var(--edge);
+    border-radius: 8px;
+    backdrop-filter: blur(6px);
+    user-select: none;
+    z-index: 10;
+  }
+  #gumball {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: var(--muted);
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+    transition: background-color .3s ease, box-shadow .3s ease;
+  }
+  /* Bright green is visually lossless; red is significant degradation. */
+  #gumball.excellent { background: #46ff7a; box-shadow: 0 0 10px 2px rgba(70,255,122,.55); }
+  #gumball.good      { background: #29a154; }
+  #gumball.fair      { background: #e0a422; }
+  #gumball.poor      { background: #d9483f; box-shadow: 0 0 10px 2px rgba(217,72,63,.45); }
+  #gumball.unknown   { background: #5a6773; }
+
+  #label { font-weight: 600; letter-spacing: .01em; }
+  #detail { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+
+  #banner {
+    position: fixed;
+    inset: 0;
+    display: none;
+    place-items: center;
+    background: #0c1116;
+    color: var(--muted);
+    z-index: 20;
+  }
+  #banner.shown { display: grid; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #gumball { transition: none; }
+  }
+</style>
+
+<div id="screen"></div>
+
+<div id="hud">
+  <div id="gumball" class="unknown" role="img" aria-label="Stream quality"></div>
+  <div>
+    <div id="label">Connecting</div>
+    <div id="detail">&nbsp;</div>
+  </div>
+</div>
+
+<div id="banner"><div id="banner-text"></div></div>
+
+<script type="module">
+import RFB from './core/rfb.js';
+
+const params = new URLSearchParams(location.search);
+const host = params.get('host') || location.hostname;
+const port = params.get('port') || location.port;
+const path = params.get('path') || 'websockify';
+const username = params.get('username') || 'root';
+const password = params.get('password') || '';
+const statusUrl = params.get('status') || './status.json';
+
+/* Quality control.
+ *
+ * noVNC's scale is 0-9. Setting rfb.qualityLevel re-sends SetEncodings, which
+ * on the server rebuilds the H.264 encoder and costs a key frame -- so changes
+ * are rate limited, and worth more than the key frame they cost.
+ *
+ * The loop is deliberately asymmetric. Congestion is acted on within a second,
+ * because the picture is already suffering; recovery is stepped one level at a
+ * time over a much longer window, because probing upwards too eagerly just
+ * re-enters congestion and costs another key frame each time.
+ */
+const QUALITY_MAX = 9;
+const QUALITY_MIN = 3;          // a usable floor: below this the picture stops being worth showing
+const QUALITY_START = 9;
+
+const POLL_MS = 500;
+const STALE_AFTER_MS = 2000;    // ~4 missed snapshots
+const SKIP_DEGRADED = 0.05;     // above this the server is visibly skipping
+const SKIP_SEVERE = 0.40;       // bad enough to take two steps at once
+const DOWN_COOLDOWN_MS = 2000;
+const UP_CLEAN_MS = 10000;      // uninterrupted clean time before probing up
+
+let rfb = null;
+let quality = QUALITY_START;
+let lastDownAt = 0;
+let cleanSince = null;
+let connected = false;
+
+const gumball = document.getElementById('gumball');
+const label = document.getElementById('label');
+const detail = document.getElementById('detail');
+const banner = document.getElementById('banner');
+const bannerText = document.getElementById('banner-text');
+
+function showBanner(text) {
+  bannerText.textContent = text;
+  banner.classList.add('shown');
+}
+
+/* Tiers come from quality, then drop one step if the server is skipping
+ * frames. Quality alone would call a pristine 3 fps slideshow excellent;
+ * skipping alone would say nothing about how the picture looks.
+ */
+function tierFor(quality, skipping) {
+  const order = ['poor', 'fair', 'good', 'excellent'];
+  let index;
+  if (quality >= 8) index = 3;
+  else if (quality >= 6) index = 2;
+  else if (quality >= 4) index = 1;
+  else index = 0;
+
+  if (skipping) index = Math.max(0, index - 1);
+  return order[index];
+}
+
+const TIER_TEXT = {
+  excellent: 'Excellent',
+  good: 'Good',
+  fair: 'Reduced',
+  poor: 'Degraded',
+  unknown: 'No telemetry',
+};
+
+function render(tier, detailText) {
+  gumball.className = tier;
+  gumball.setAttribute('aria-label', `Stream quality: ${TIER_TEXT[tier]}`);
+  label.textContent = TIER_TEXT[tier];
+  detail.textContent = detailText;
+}
+
+function applyQuality(next) {
+  next = Math.min(QUALITY_MAX, Math.max(QUALITY_MIN, next));
+  if (next === quality || !rfb) return;
+  quality = next;
+  rfb.qualityLevel = quality;
+}
+
+/* With websockify in front, every browser reaches neatvnc from 127.0.0.1 on an
+ * ephemeral port, so the page cannot pick its own row out of the file. This
+ * assumes one viewer; with more than one it reports the worst of them, which is
+ * conservative but may not be this session.
+ */
+function worstClient(clients) {
+  let worst = null;
+  for (const c of clients) {
+    if (!worst) { worst = c; continue; }
+    if (c.skip_fraction > worst.skip_fraction) worst = c;
+    else if (c.skip_fraction === worst.skip_fraction &&
+             effectiveQuality(c) < effectiveQuality(worst)) worst = c;
+  }
+  return worst;
+}
+
+/* neatvnc reports 10 when a client expressed no quality preference at all.
+ * That is off the end of noVNC's scale; the H.264 encoder treats it as 6.
+ */
+function effectiveQuality(client) {
+  return client.quality === 10 ? 6 : client.quality;
+}
+
+async function poll() {
+  let snapshot = null;
+  try {
+    const response = await fetch(`${statusUrl}?t=${Date.now()}`, { cache: 'no-store' });
+    if (response.ok) snapshot = await response.json();
+  } catch (e) {
+    snapshot = null;
+  }
+
+  const now = Date.now();
+  const fresh = snapshot &&
+    typeof snapshot.timestamp_ms === 'number' &&
+    (now - snapshot.timestamp_ms) < STALE_AFTER_MS;
+
+  if (!fresh || !Array.isArray(snapshot.clients)) {
+    // No telemetry: say so, and hold quality rather than guessing.
+    render('unknown', connected ? 'holding quality ' + quality : ' ');
+    cleanSince = null;
+    return;
+  }
+
+  const client = worstClient(snapshot.clients);
+  if (!client) {
+    render('unknown', 'no clients');
+    cleanSince = null;
+    return;
+  }
+
+  const skip = client.skip_fraction || 0;
+  const skipping = skip > SKIP_DEGRADED;
+
+  if (skipping) {
+    cleanSince = null;
+    if (now - lastDownAt >= DOWN_COOLDOWN_MS) {
+      applyQuality(quality - (skip > SKIP_SEVERE ? 2 : 1));
+      lastDownAt = now;
+    }
+  } else {
+    if (cleanSince === null) cleanSince = now;
+    if (now - cleanSince >= UP_CLEAN_MS && quality < QUALITY_MAX) {
+      applyQuality(quality + 1);
+      cleanSince = now;
+    }
+  }
+
+  const extra = snapshot.clients.length > 1 ?
+    ` · worst of ${snapshot.clients.length} clients` : '';
+  render(tierFor(effectiveQuality(client), skipping),
+      `q${quality} · ${client.encoded_fps.toFixed(0)} fps` +
+      (skipping ? ` · ${(skip * 100).toFixed(0)}% skipped` : '') + extra);
+}
+
+// Published for the end-to-end test, which asserts on the tier and the quality
+// the loop settled at.
+window.__viewer = {
+  get tier() { return gumball.className; },
+  get quality() { return quality; },
+  get connected() { return connected; },
+};
+
+const url = `ws://${host}${port ? ':' + port : ''}/${path}`;
+
+try {
+  rfb = new RFB(document.getElementById('screen'), url, {
+    credentials: { username, password },
+  });
+} catch (e) {
+  showBanner(`Could not connect: ${e}`);
+  throw e;
+}
+
+rfb.viewOnly = true;
+rfb.scaleViewport = true;
+rfb.qualityLevel = quality;
+
+rfb.addEventListener('connect', () => {
+  connected = true;
+  banner.classList.remove('shown');
+});
+rfb.addEventListener('disconnect', (e) => {
+  connected = false;
+  render('unknown', ' ');
+  showBanner(e.detail && e.detail.clean ? 'Disconnected' : 'Connection lost');
+});
+rfb.addEventListener('credentialsrequired', () => {
+  rfb.sendCredentials({ username, password });
+});
+
+setInterval(poll, POLL_MS);
+poll();
+</script>
