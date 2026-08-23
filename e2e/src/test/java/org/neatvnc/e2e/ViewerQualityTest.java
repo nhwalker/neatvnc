@@ -39,6 +39,13 @@ class ViewerQualityTest {
     /** Pinned to match selenium-java on the classpath; see WestonNoVncH264Test. */
     private static final String SELENIUM_IMAGE = "selenium/standalone-chrome:4.27.0";
 
+    /**
+     * 0.35 of a core. Enough to start and serve, not enough to keep up with a
+     * 1920x1200 desktop -- measured at 5 to 8 fps with 70 to 80% of frames
+     * discarded, on hosts of quite different speeds.
+     */
+    private static final long CONGESTED_NANO_CPUS = 350_000_000L;
+
     private static final int QUALITY_START = 9;
     private static final int QUALITY_FLOOR = 3;
 
@@ -96,7 +103,8 @@ class ViewerQualityTest {
     @DisplayName("a stream with headroom is left alone and reads as excellent")
     void healthyStreamHoldsQuality() {
         try (WestonContainer weston = new WestonContainer(image, codec)) {
-            // Small enough that websockify carries it comfortably.
+            // Small enough that even a modest host carries it comfortably. No
+            // CPU limit here, deliberately: this is the no-regression case.
             weston.withEnv("WESTON_WIDTH", "640");
             weston.withEnv("WESTON_HEIGHT", "480");
             weston.withNetwork(network);
@@ -121,10 +129,24 @@ class ViewerQualityTest {
     @DisplayName("a stream that cannot keep up is degraded down to the floor")
     void congestedStreamDegrades() {
         try (WestonContainer weston = new WestonContainer(image, codec)) {
-            // Comfortably more than websockify can carry, so the server starts
-            // skipping frames and the loop has something to react to.
             weston.withEnv("WESTON_WIDTH", "1920");
             weston.withEnv("WESTON_HEIGHT", "1200");
+
+            /*
+             * Congestion has to be induced, not hoped for. Picking a desktop
+             * size large enough to overwhelm the stack only works if the host
+             * is slow: a CI runner carries 1920x1200 through websockify at
+             * around 25 fps with barely any skipping, and the test then fails
+             * for want of anything to react to.
+             *
+             * An absolute CPU limit is the same everywhere. At this share the
+             * encoder and websockify between them cannot keep up with the
+             * frames weston offers, the client falls behind acknowledging what
+             * it has been sent, and the congestion limiter starts discarding
+             * frames -- which is exactly the condition under test.
+             */
+            weston.withCreateContainerCmdModifier(cmd ->
+                cmd.getHostConfig().withNanoCPUs(CONGESTED_NANO_CPUS));
             weston.withNetwork(network);
             weston.start();
 

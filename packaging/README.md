@@ -144,6 +144,7 @@ holding one record per connected client:
 
 ```json
 { "version": 1, "timestamp_ms": 1787499969126, "interval_ms": 500,
+  "source_fps": 60.00,
   "clients": [ { "id": 1, "address": "127.0.0.1:51924", "username": null,
                  "encoding": "open-h264", "quality": 6,
                  "frames_encoded": 1234, "frames_dropped": 12,
@@ -158,6 +159,11 @@ and is renamed into place, so a reader sees either the previous snapshot or the
 next one and never a partial one. Rates cover the last interval rather than the
 session, because a session-long average stops responding to a change in
 conditions within a minute or two.
+
+`source_fps` is how fast the compositor is feeding buffers, and the per-client
+`encoded_fps` has to be read against it. Without it there is no way to tell an
+idle desktop from a server that cannot keep up: both deliver few frames, and
+only one of them is a problem.
 
 Two fields need a note. `quality` is what the client asked for, on the 0-9 scale
 the RFB quality pseudo-encodings use; 10 means the client expressed no
@@ -185,10 +191,18 @@ after ten seconds of clean running, floored at 3. The asymmetry matters: every
 change re-sends `SetEncodings`, which rebuilds the H.264 encoder and costs a key
 frame.
 
-Note what "not keeping up" means here. It is the *delivered frame rate*, not the
-skip ratio. A compositor offering 60 Hz down a link that comfortably carries
-30 fps skips half of every second forever, and that stream is fine; keying off
-the ratio drives quality to the floor and holds it there.
+Note what "not keeping up" means here: the delivered frame rate measured against
+what the compositor is actually producing. Neither half works alone. The skip
+ratio does not, because a compositor offering 60 Hz down a link that comfortably
+carries 30 fps skips half of every second forever on a stream that is fine. The
+delivered rate does not either, because an idle desktop delivers almost nothing
+and there is nothing wrong with it.
+
+Read together they cover both ways this goes wrong: a congested link, where
+frames are encoded and then discarded, and a server too slow to encode, where
+they are never produced at all. The second has no skipped frames to show for
+itself, so any rule that requires skipping misses it -- and lowering quality is
+exactly what would help.
 
 Running the server with `NVNC_LOG_LEVEL=info` logs which encoder was selected
 (`Using h264_nvenc for H.264 encoding`) and which encoding each client got

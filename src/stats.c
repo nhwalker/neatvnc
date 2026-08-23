@@ -208,6 +208,15 @@ static void stats__write(struct nvnc* server)
 	fprintf(out, "  \"version\": %d,\n", STATS_SCHEMA_VERSION);
 	fprintf(out, "  \"timestamp_ms\": %" PRIu64 ",\n", now);
 	fprintf(out, "  \"interval_ms\": %d,\n", STATS_INTERVAL_MS);
+
+	/* The rate the compositor is producing at, which is what the per-client
+	 * encoded rate has to be read against.
+	 */
+	uint64_t offered = server->stats.frames_offered;
+	uint64_t d_offered = offered - server->stats.prev_frames_offered;
+	server->stats.prev_frames_offered = offered;
+	fprintf(out, "  \"source_fps\": %.2f,\n",
+			interval_s > 0 ? d_offered / interval_s : 0.0);
 	fprintf(out, "  \"clients\": [\n");
 
 	int count = 0;

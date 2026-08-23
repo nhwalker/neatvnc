@@ -194,6 +194,14 @@ struct nvnc {
 		struct aml_ticker* ticker;
 		uint64_t last_write_ms;
 		uint32_t next_client_id;
+
+		/* How many buffers the compositor has fed us. Without it there
+		 * is no way to tell an idle desktop from one the server cannot
+		 * keep up with: both deliver few frames, and only one of them
+		 * is a problem.
+		 */
+		uint64_t frames_offered;
+		uint64_t prev_frames_offered;
 	} stats;
 
 	struct {
