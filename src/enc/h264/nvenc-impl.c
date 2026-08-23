@@ -51,6 +51,11 @@
 
 #define DEFAULT_CODEC_NAME "h264_nvenc"
 
+/* Only ever used to keep the encoder's level calculation sane; frames are
+ * timestamped individually and may arrive at any rate below this.
+ */
+#define NOMINAL_FRAMERATE 60
+
 struct fb_queue_entry {
 	struct nvnc_fb* fb;
 	TAILQ_ENTRY(fb_queue_entry) link;
@@ -208,6 +213,15 @@ static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
 	c->width = self->width;
 	c->height = self->height;
 	c->time_base = self->timebase;
+
+	/* The time base is microseconds so that frame timestamps keep their
+	 * precision, but an encoder left to infer the frame rate from it
+	 * concludes that we are feeding it a million frames a second. It then
+	 * writes an SPS whose level cannot legally carry that macroblock rate,
+	 * and strict decoders -- Chrome's WebCodecs among them -- refuse the
+	 * stream outright. Declare a plausible ceiling instead.
+	 */
+	c->framerate = (AVRational){ NOMINAL_FRAMERATE, 1 };
 	c->sample_aspect_ratio = (AVRational){1, 1};
 	c->pix_fmt = self->enc_format;
 	c->gop_size = INT32_MAX; /* We'll select key frames manually */
