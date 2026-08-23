@@ -123,6 +123,9 @@ enough on its own because RSA-AES authentication also needs the username.
 | `NEATVNC_H264_ENCODER` | `v4l2m2m` \| `vaapi` \| `nvenc` \| `auto` (default) — pins encoder selection |
 | `NEATVNC_H264_NVENC_CODEC` | libavcodec encoder name, default `h264_nvenc`. Setting it to `libx264` runs the same code path on a software encoder, which is how CI tests this without a GPU |
 | `NEATVNC_H264_NVENC_FORMAT` | `rgb` (default where the encoder accepts it) or `nv12`. `nv12` moves the colour conversion from NVENC to libswscale, where the coefficients are ours to choose — try it if colours look off |
+| `NEATVNC_H264_NVENC_PRESET` | NVENC preset, default `p1`. Search effort lives here: NVENC exposes no motion estimation controls, so `p1`–`p7` is the only way to ask it to look harder. See below |
+| `NEATVNC_H264_NVENC_TUNE` | NVENC tuning, default `ull` |
+| `NEATVNC_H264_NVENC_MULTIPASS` | NVENC multipass mode, unset by default. Two-pass motion estimation, the other knob worth trying if a fast scroll defeats the search |
 | `NVNC_LOG_LEVEL` | `error` \| `warning` (release default) \| `info` \| `debug` \| `trace`. `info` is the one that names the chosen encoder and encoding |
 | `NVNC_STATS_FILE` | Path to write a per-client stream health snapshot to, as JSON, every 500 ms. Unset by default, in which case nothing is written. See below |
 
@@ -136,6 +139,49 @@ nvidia-smi --query-gpu=utilization.encoder --format=csv
 ffmpeg -hide_banner -encoders | grep nvenc     # h264_nvenc must be listed
 ls /usr/lib64/libnvidia-encode.so.1            # injected by the container toolkit
 ```
+
+### Scrolling and the motion search
+
+Scrolling a dense plot is the hardest thing this stack does, and how it is
+searched for decides the cost by more than an order of magnitude.
+
+A scroll is a pure translation, so an encoder that can find the displacement
+codes almost nothing. `ultrafast` uses a diamond search with a range of 16
+pixels, which is ample for a desktop where things move a little and useless for
+one being dragged. Past roughly 24 pixels per frame the displacement leaves the
+window, prediction fails, and the picture is coded from scratch instead.
+
+Measured through the encoder here, 1920x1200 of scrolling noise:
+
+| Scroll | `ultrafast` alone | with `me=umh:merange=64` |
+| --- | --- | --- |
+| 8 px/frame | 8.5 Mb/s, 57 fps | 8.4 Mb/s, 55 fps |
+| 32 px/frame | 284 Mb/s, 26 fps | 11.4 Mb/s, 51 fps |
+| 64 px/frame | 284 Mb/s, 24 fps | 18.9 Mb/s, 47 fps |
+
+The wider search is applied on the software path. Note it is *faster* on the
+content that needs it, which is not the trade-off one expects: when the search
+fails the encoder codes intra blocks instead, and coding that failure costs more
+than finding the match would have. On content that is not scrolling it is
+neither better nor worse.
+
+It is the search pattern that matters, not the range. Widening `merange` under
+the diamond search changes nothing, because a diamond cannot traverse that far.
+
+**None of this is settled for NVENC.** It exposes no motion estimation controls
+at all — `preset` and `multipass` are the only levers — and whether it has the
+same cliff at `p1` cannot be answered without the hardware. That is what
+`NEATVNC_H264_NVENC_PRESET` is for: walk `p1` through `p7` against a fast scroll
+on a machine with a GPU and find out. The defaults are unchanged, so nothing
+moves until somebody sets it.
+
+One thing worth knowing about the content, which neatvnc can do nothing about:
+odd scroll displacements cost far more than even ones. Under 4:2:0 the chroma
+vector is half the luma one, so an odd shift needs chroma interpolated by half a
+pixel, and interpolated noise never matches real noise. Measured at 1920x1200, a
+1-pixel scroll costs 124 Mb/s against 2.6 for a 2-pixel one. Quantising scroll
+offsets to even pixels is an application-side change and is worth more than
+anything in this section.
 
 ### Per-client stream health
 
