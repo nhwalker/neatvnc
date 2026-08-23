@@ -117,6 +117,8 @@ void nvnc_display_feed_buffer(struct nvnc_display* self, struct nvnc_fb* fb,
 	struct nvnc* server = self->server;
 	assert(server);
 
+	server->stats.frames_offered++;
+
 	struct pixman_region16 refined_damage;
 	pixman_region_init(&refined_damage);
 

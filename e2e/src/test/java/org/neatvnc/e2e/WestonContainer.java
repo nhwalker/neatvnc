@@ -5,6 +5,7 @@ import java.time.Duration;
 
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.containers.wait.strategy.WaitAllStrategy;
 import org.testcontainers.utility.DockerImageName;
 
 /**
@@ -46,7 +47,16 @@ public class WestonContainer extends GenericContainer<WestonContainer> {
         withEnv("NEATVNC_H264_NVENC_CODEC", h264Codec);
         withEnv("NVNC_LOG_LEVEL", "debug");
 
-        waitingFor(Wait.forLogMessage(".*noVNC on http.*", 1)
+        /*
+         * The log line and the listening port are both needed. The entrypoint
+         * echoes "noVNC on http..." and only then execs websockify, so the
+         * message alone lets a test race ahead of the port being bound and get
+         * a connection refused -- which it does whenever the test does not
+         * happen to spend a while doing something else first.
+         */
+        waitingFor(new WaitAllStrategy()
+            .withStrategy(Wait.forLogMessage(".*noVNC on http.*", 1))
+            .withStrategy(Wait.forListeningPort())
             .withStartupTimeout(Duration.ofMinutes(2)));
     }
 

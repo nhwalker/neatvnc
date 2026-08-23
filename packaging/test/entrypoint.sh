@@ -10,6 +10,9 @@
 #   WESTON_SHELL          weston shell to load, default 'kiosk'
 #   WESTON_DEMO_CLIENTS   space separated clients to start once weston is up
 #   WEB_TLS               0 serves noVNC over plain HTTP instead of HTTPS
+#   NVNC_STATS_FILE       where neatvnc writes its per-client stats snapshot.
+#                         Defaults into the directory websockify serves, so
+#                         viewer.html can fetch it. Set to empty to disable.
 
 set -euo pipefail
 
@@ -25,6 +28,15 @@ export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-e2e}"
 
 WESTON_LOG=/tmp/weston.log
 CERT=/tmp/novnc.pem
+
+# viewer.html reads this over HTTP to drive its quality indicator and its
+# quality control loop, so it has to live in the directory websockify serves.
+#
+# Note that websockify serves static files without authentication: anything
+# that can reach the web port can read this file, including the addresses and
+# user names of connected clients. That is acceptable on a trusted network and
+# nowhere else -- set NVNC_STATS_FILE empty to turn it off.
+export NVNC_STATS_FILE="${NVNC_STATS_FILE-/usr/share/novnc/status.json}"
 
 start_weston() {
 	echo "Starting weston on :${VNC_PORT} (${WESTON_WIDTH}x${WESTON_HEIGHT})"
