@@ -313,9 +313,17 @@ window.__viewer = {
   get tier() { return gumball.className; },
   get quality() { return quality; },
   get connected() { return connected; },
+  get url() { return url; },
 };
 
-const url = `ws://${host}${port ? ':' + port : ''}/${path}`;
+/* The scheme must follow the page's own. WebCodecs H.264 only exists in a
+ * secure context, so any real deployment serves this page over HTTPS -- and on
+ * an HTTPS page a ws:// socket is mixed content, which the browser refuses
+ * before a single byte is sent. Hardcoding ws:// therefore made the page work
+ * only on the plain-HTTP test rig and nowhere else.
+ */
+const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+const url = `${scheme}://${host}${port ? ':' + port : ''}/${path}`;
 
 try {
   rfb = new RFB(document.getElementById('screen'), url, {

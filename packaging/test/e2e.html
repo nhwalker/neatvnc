@@ -220,7 +220,10 @@ setInterval(render, 100);
 // not the same as having it.
 setTimeout(() => { state.webcodecsH264 = supportsWebCodecsH264Decode; }, 1500);
 
-const url = `ws://${host}${port ? ':' + port : ''}/${path}`;
+// Follow the page's own scheme: on an HTTPS page a ws:// socket is mixed
+// content and the browser refuses it. See viewer.html for the long version.
+const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+const url = `${scheme}://${host}${port ? ':' + port : ''}/${path}`;
 document.getElementById('status').textContent = `connecting to ${url}`;
 
 let rfb;
