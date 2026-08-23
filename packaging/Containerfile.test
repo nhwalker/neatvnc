@@ -59,6 +59,10 @@ COPY packaging/test/rfb-h264-client.py /usr/local/bin/rfb-h264-client
 COPY packaging/test/entrypoint.sh /usr/local/bin/entrypoint
 RUN chmod +x /usr/local/bin/rfb-h264-client /usr/local/bin/entrypoint
 
+# The end-to-end viewer, which imports noVNC's core modules and shows which
+# encoding is really being decoded.
+COPY packaging/test/e2e.html /usr/share/novnc/e2e.html
+
 ENV XDG_RUNTIME_DIR=/run/user/0 \
     WESTON_WIDTH=1280 \
     WESTON_HEIGHT=720 \
