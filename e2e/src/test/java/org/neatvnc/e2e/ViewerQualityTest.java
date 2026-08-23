@@ -1,6 +1,5 @@
 package org.neatvnc.e2e;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,7 +45,9 @@ class ViewerQualityTest {
      */
     private static final long CONGESTED_NANO_CPUS = 350_000_000L;
 
-    private static final int QUALITY_START = 9;
+    /** Must match QUALITY_START in viewer.html. */
+    private static final int QUALITY_START = 6;
+    private static final int QUALITY_MAX = 9;
     private static final int QUALITY_FLOOR = 3;
 
     /** Long enough for the loop to settle; it steps at most once every 2 s. */
@@ -115,9 +116,21 @@ class ViewerQualityTest {
             Sample last = samples.get(samples.size() - 1);
             Allure.addAttachment("healthy link, samples", "text/plain", render(samples));
 
-            assertEquals(QUALITY_START, last.quality,
-                () -> "the loop should not have moved quality on a healthy link, but it "
+            /* The loop starts at 6 and, on a link with headroom, is allowed --
+             * expected, even -- to probe upward one step per clean window. What
+             * it must never do here is descend.
+             */
+            assertTrue(last.quality >= QUALITY_START && last.quality <= QUALITY_MAX,
+                () -> "the loop should never descend on a healthy link, but it "
                     + "settled at " + last.quality + "\n" + render(samples));
+            for (int i = 1; i < samples.size(); ++i) {
+                int previous = samples.get(i - 1).quality;
+                int current = samples.get(i).quality;
+                final int index = i;
+                assertTrue(current >= previous,
+                    () -> "quality descended at sample " + index
+                        + " on a healthy link\n" + render(samples));
+            }
             assertTrue(last.tier.equals("excellent") || last.tier.equals("good"),
                 () -> "expected a healthy tier, got " + last.tier + "\n" + render(samples));
             assertTrue(last.statsFresh,
