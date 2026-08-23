@@ -117,7 +117,13 @@ const statusUrl = params.get('status') || './status.json';
  */
 const QUALITY_MAX = 9;
 const QUALITY_MIN = 3;          // a usable floor: below this the picture stops being worth showing
-const QUALITY_START = 9;
+/* Start in the middle rather than at the top. Quality 9 maps to QP 1 on the
+ * server -- near-lossless, the most expensive stream the encoder can make --
+ * so starting there guarantees that a constrained link opens with its
+ * worst-case transient before the loop has any data to react to. From 6 the
+ * clean-window probe climbs to 9 within a minute on links that can afford it.
+ */
+const QUALITY_START = 6;
 
 const POLL_MS = 500;
 const STALE_AFTER_MS = 2000;    // ~4 missed snapshots
@@ -156,6 +162,9 @@ let smoothedFps = null;
 let smoothedSkip = null;
 let smoothedSource = null;
 let connected = false;
+let lastServerTs = null;        // last timestamp_ms seen in status.json
+let lastAdvanceAt = 0;          // local clock when it last changed
+let lastPickWasOwn = null;      // whether the last poll identified its own row
 
 const gumball = document.getElementById('gumball');
 const label = document.getElementById('label');
@@ -207,10 +216,24 @@ function applyQuality(next) {
 }
 
 /* With websockify in front, every browser reaches neatvnc from 127.0.0.1 on an
- * ephemeral port, so the page cannot pick its own row out of the file. This
- * assumes one viewer; with more than one it reports the worst of them, which is
- * conservative but may not be this session.
+ * ephemeral port, so a row cannot be matched to this session by address. But
+ * quality is a value this very page set, so a row whose quality matches ours
+ * -- and no other row does -- is almost certainly ours. When that fails (two
+ * viewers at the same level, or the half-second lag right after a change),
+ * fall back to the worst row, which is conservative: it may degrade this
+ * session for someone else's bad link, but never the other way around.
  */
+function pickClient(clients) {
+  if (clients.length === 1)
+    return { client: clients[0], own: true };
+
+  const matches = clients.filter((c) => effectiveQuality(c) === quality);
+  if (matches.length === 1)
+    return { client: matches[0], own: true };
+
+  return { client: worstClient(clients), own: false };
+}
+
 function worstClient(clients) {
   let worst = null;
   for (const c of clients) {
@@ -239,9 +262,23 @@ async function poll() {
   }
 
   const now = Date.now();
+
+  /* Freshness is judged by whether the server's timestamp is advancing, never
+   * by comparing it against this machine's clock: the two clocks belong to
+   * different machines, and skew beyond the threshold would otherwise park
+   * the page on "No telemetry" forever -- or let a dead server's last
+   * snapshot pass as live indefinitely. Only local-clock differences are
+   * used.
+   */
+  if (snapshot && typeof snapshot.timestamp_ms === 'number' &&
+      snapshot.timestamp_ms !== lastServerTs) {
+    lastServerTs = snapshot.timestamp_ms;
+    lastAdvanceAt = now;
+  }
   const fresh = snapshot &&
     typeof snapshot.timestamp_ms === 'number' &&
-    (now - snapshot.timestamp_ms) < STALE_AFTER_MS;
+    lastServerTs !== null &&
+    (now - lastAdvanceAt) < STALE_AFTER_MS;
 
   if (!fresh || !Array.isArray(snapshot.clients)) {
     // No telemetry: say so, and hold quality rather than guessing.
@@ -250,7 +287,9 @@ async function poll() {
     return;
   }
 
-  const client = worstClient(snapshot.clients);
+  const { client, own } = snapshot.clients.length > 0 ?
+    pickClient(snapshot.clients) : { client: null, own: false };
+  lastPickWasOwn = client ? own : null;
   if (!client) {
     render('unknown', 'no clients');
     cleanSince = null;
@@ -300,7 +339,8 @@ async function poll() {
   }
 
   const extra = snapshot.clients.length > 1 ?
-    ` · worst of ${snapshot.clients.length} clients` : '';
+    (own ? ` · this session of ${snapshot.clients.length}` :
+        ` · worst of ${snapshot.clients.length} clients`) : '';
   render(tierFor(effectiveQuality(client), struggling),
       `q${quality} · ${fps.toFixed(0)}/${source.toFixed(0)} fps` +
       (struggling && skip > 0.05 ? ` · ${(skip * 100).toFixed(0)}% skipped` : '') +
@@ -314,6 +354,7 @@ window.__viewer = {
   get quality() { return quality; },
   get connected() { return connected; },
   get url() { return url; },
+  get ownRow() { return lastPickWasOwn; },
 };
 
 /* The scheme must follow the page's own. WebCodecs H.264 only exists in a
