@@ -1,6 +1,7 @@
 #include "bandwidth.h"
 
 #include <stdlib.h>
+#include <limits.h>
 #include <tgmath.h>
 
 #define SAMPLES_MAX 16
@@ -113,5 +114,14 @@ void bwe_update_rtt_min(struct bwe* self, int rtt_min)
 
 int bwe_get_estimate(const struct bwe* self)
 {
+	/* The estimate itself is unbounded: a window whose total excess delay
+	 * is a single microsecond divides a megabyte by 1e-6 and yields
+	 * terabytes per second. Converting a double beyond INT_MAX to int is
+	 * undefined -- in practice INT_MIN, which readers then treat as a
+	 * negative bandwidth -- so saturate instead.
+	 */
+	if (self->estimate >= (double)INT_MAX)
+		return INT_MAX;
+
 	return round(self->estimate);
 }

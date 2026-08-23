@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <math.h>
 
 #define SAMPLES_MAX 16
@@ -187,6 +188,30 @@ static bool test_never_negative(void)
 	return ok;
 }
 
+/* A near-zero excess delay is the case the zero guard does not catch: large
+ * frames over a single microsecond of summed delay put the estimate in the
+ * terabytes per second, far beyond what int can hold, and the conversion used
+ * to wrap to INT_MIN. Loopback-adjacent clients -- a websockify hop on the
+ * same host -- produce exactly these timings. The estimate must saturate.
+ */
+static bool test_estimate_saturates(void)
+{
+	struct bwe* self = bwe_create(50);
+
+	// Sixteen samples of 512 KiB; every round trip at the minimum except
+	// one, which is a single microsecond over.
+	for (int i = 0; i < 16; ++i)
+		feed(self, 512 * 1024, i * 1000, 50 + (i == 7 ? 1 : 0));
+
+	int estimate = bwe_get_estimate(self);
+	bool ok = estimate == INT_MAX;
+	if (!ok)
+		printf("       expected INT_MAX, got %d\n", estimate);
+
+	bwe_destroy(self);
+	return ok;
+}
+
 #define XSTR(s) STR(s)
 #define STR(s) #s
 
@@ -209,6 +234,7 @@ int main()
 	ok &= RUN_TEST(congested_window_wins);
 	ok &= RUN_TEST(ring_buffer_wraps);
 	ok &= RUN_TEST(never_negative);
+	ok &= RUN_TEST(estimate_saturates);
 
 	return ok ? 0 : 1;
 }
