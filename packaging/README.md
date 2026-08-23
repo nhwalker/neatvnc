@@ -103,6 +103,14 @@ false and will use Tight.
 ignoring CopyRect, so H.264 wins on its own. There is no URL parameter for it;
 if you are getting Tight, one of the three points above is the reason.
 
+**Frames must be a single slice.** The open-h264 encoding is consumed one NAL
+unit at a time — noVNC hands each to WebCodecs as its own chunk — so a frame cut
+into several slices arrives as several *partial* frames and the picture falls
+apart: Chrome renders a flat green field (all-zero YUV), Firefox renders drifting
+mush. Both are legal H.264 that ffmpeg reassembles without complaint, which is
+why only a browser catches it. NVENC emits one slice per frame; the libx264
+stand-in is pinned to one thread so that it does too.
+
 **Weston needs a PAM login.** `vnc_handle_auth()` rejects any username other
 than the user Weston runs as, so in the container that means `root` plus
 whatever `VNC_PASSWORD` is set to. noVNC's `password` URL parameter is not

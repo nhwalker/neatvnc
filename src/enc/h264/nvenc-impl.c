@@ -264,6 +264,20 @@ static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
 		try_set_option(self, "preset", "ultrafast");
 		try_set_option(self, "tune", "zerolatency");
 		try_set_option(self, "crf", quality_str);
+
+		/* One thread, because threading is what decides how many slices
+		 * a frame is cut into. x264's zerolatency tune turns on sliced
+		 * threads, which produces one slice per core; turning those off
+		 * instead hands the job to frame threads, which delay the first
+		 * packets. Either is legal H.264 and ffmpeg reassembles it
+		 * without complaint, but the open-h264 encoding is consumed one
+		 * NAL unit at a time -- noVNC hands each to WebCodecs as its own
+		 * chunk -- so a multi-slice frame arrives as several partial
+		 * frames and the picture falls apart. NVENC emits one slice per
+		 * frame regardless; this keeps the software stand-in honest
+		 * about the shape of the stream it stands in for.
+		 */
+		c->thread_count = 1;
 	}
 
 	return 0;
