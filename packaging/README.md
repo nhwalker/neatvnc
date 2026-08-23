@@ -137,6 +137,42 @@ ffmpeg -hide_banner -encoders | grep nvenc     # h264_nvenc must be listed
 ls /usr/lib64/libnvidia-encode.so.1            # injected by the container toolkit
 ```
 
+### Scrolling and the motion search
+
+Scrolling a dense plot is the hardest thing this stack does, and how it is
+searched for decides the cost by more than an order of magnitude.
+
+A scroll is a pure translation, so an encoder that can find the displacement
+codes almost nothing. `ultrafast` uses a diamond search with a range of 16
+pixels, which is ample for a desktop where things move a little and useless for
+one being dragged. Past roughly 24 pixels per frame the displacement leaves the
+window, prediction fails, and the picture is coded from scratch instead.
+
+Measured through the encoder here, 1920x1200 of scrolling noise:
+
+| Scroll | `ultrafast` alone | with `me=umh:merange=64` |
+| --- | --- | --- |
+| 8 px/frame | 8.5 Mb/s, 57 fps | 8.4 Mb/s, 55 fps |
+| 32 px/frame | 284 Mb/s, 26 fps | 11.4 Mb/s, 51 fps |
+| 64 px/frame | 284 Mb/s, 24 fps | 18.9 Mb/s, 47 fps |
+
+The wider search is applied on the software path. Note it is *faster* on the
+content that needs it, which is not the trade-off one expects: when the search
+fails the encoder codes intra blocks instead, and coding that failure costs more
+than finding the match would have. On content that is not scrolling it is
+neither better nor worse.
+
+It is the search pattern that matters, not the range. Widening `merange` under
+the diamond search changes nothing, because a diamond cannot traverse that far.
+
+One thing worth knowing about the content, which neatvnc can do nothing about:
+odd scroll displacements cost far more than even ones. Under 4:2:0 the chroma
+vector is half the luma one, so an odd shift needs chroma interpolated by half a
+pixel, and interpolated noise never matches real noise. Measured at 1920x1200, a
+1-pixel scroll costs 124 Mb/s against 2.6 for a 2-pixel one. Quantising scroll
+offsets to even pixels is an application-side change and is worth more than
+anything in this section.
+
 ### Per-client stream health
 
 Setting `NVNC_STATS_FILE` makes neatvnc rewrite a JSON snapshot every 500 ms,

@@ -265,6 +265,27 @@ static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
 		try_set_option(self, "tune", "zerolatency");
 		try_set_option(self, "crf", quality_str);
 
+		/* A wider motion search than the ultrafast preset picks.
+		 *
+		 * ultrafast uses a diamond search with a range of 16 pixels,
+		 * which is ample for a desktop where things move a little and
+		 * useless for one being scrolled. Past about 24 pixels per
+		 * frame the displacement leaves the search window, prediction
+		 * fails outright, and the encoder codes the picture from
+		 * scratch instead -- on dense content that is the difference
+		 * between eight megabits a second and nearly three hundred.
+		 *
+		 * The search pattern is what matters, not the range: widening
+		 * merange alone changes nothing, because the diamond cannot
+		 * traverse that far. umh can.
+		 *
+		 * It is also faster on exactly the content that needs it, which
+		 * is not the trade-off one expects. When the search fails the
+		 * encoder falls back to coding intra blocks, and coding that
+		 * failure costs more than finding the match would have.
+		 */
+		try_set_option(self, "x264-params", "me=umh:merange=64");
+
 		/* One thread, because threading is what decides how many slices
 		 * a frame is cut into. x264's zerolatency tune turns on sliced
 		 * threads, which produces one slice per core; turning those off
