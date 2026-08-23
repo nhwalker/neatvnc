@@ -133,11 +133,32 @@ Running the server with `NVNC_LOG_LEVEL=debug` logs which encoder was selected
 ## Testing without a GPU
 
 ```
-packaging/test/selftest-draw.sh          # needs nvnc-draw on PATH
+packaging/test/selftest-draw.sh          # protocol level; needs nvnc-draw on PATH
+packaging/test/selftest-pattern.sh       # pixel level; needs the ffmpeg binary
 packaging/test/rfb-h264-client.py        # against any running neatvnc server
 docker run --rm -e VNC_PASSWORD=x neatvnc-nvenc-test selftest
 ```
 
+Set `NEATVNC_BUILD_DIR=build` to run against a meson build tree instead of the
+installed library.
+
 `rfb-h264-client.py` handshakes, advertises open-h264 ahead of raw, and asserts
 the reply is an open-h264 rect carrying an Annex B keyframe with SPS, PPS and an
-IDR in baseline profile — which is what noVNC's decoder needs.
+IDR in baseline profile — which is what noVNC's decoder needs. With `--frames N`
+it also requires later packets to carry non-IDR slices, so a stream of nothing
+but keyframes fails.
+
+`selftest-pattern.sh` is the only test that looks at pixels. `h264-test-server.c`
+serves four saturated quadrants from a frame buffer whose stride is wider than
+the image; the client decodes the stream with ffmpeg and compares. That
+combination is deliberate:
+
+- a **stride** mistake — neatvnc counts stride in pixels, FFmpeg's `linesize` in
+  bytes — skews every row, and the padding is filled with magenta so it shows up
+  at the edges immediately;
+- a **channel order** mistake in the DRM fourcc to `AVPixelFormat` mapping swaps
+  the red and blue quadrants.
+
+Both produce perfectly valid H.264 of the wrong picture, so nothing short of
+decoding and comparing catches them. Both failure modes were injected
+deliberately to confirm the test fails when it should.

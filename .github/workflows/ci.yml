@@ -19,7 +19,8 @@ jobs:
             meson ninja-build pkg-config gcc \
             libavcodec-dev libavfilter-dev libavutil-dev libswscale-dev \
             libdrm-dev libgbm-dev libpixman-1-dev libgnutls28-dev \
-            nettle-dev libturbojpeg0-dev zlib1g-dev libpng-dev
+            nettle-dev libturbojpeg0-dev zlib1g-dev libpng-dev \
+            ffmpeg
 
       # aml is not packaged on Ubuntu, and neatvnc's meson already falls back
       # to a subproject when it is not found on the system.
@@ -52,6 +53,13 @@ jobs:
           echo "=== server log ==="
           cat /tmp/draw.log
           exit $rc
+
+      # Decodes the stream and compares it against a known pattern. A
+      # well-formed bitstream proves nothing about stride or channel order, so
+      # this is the only test that would catch either. It also collects several
+      # frames, exercising P-frames rather than just the first keyframe.
+      - name: Pixel and multi-frame test
+        run: NEATVNC_BUILD_DIR=build packaging/test/selftest-pattern.sh
 
       # The VAAPI-only configuration must keep building exactly as before.
       - name: Configure and build with NVENC disabled
