@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <meta charset="utf-8">
 <title>Desktop</title>
+<link rel="icon" href="data:,">
 <!--
   A minimal noVNC viewer that reports stream health and manages picture quality
   on its own.
@@ -120,8 +121,23 @@ const QUALITY_START = 9;
 
 const POLL_MS = 500;
 const STALE_AFTER_MS = 2000;    // ~4 missed snapshots
-const SKIP_DEGRADED = 0.05;     // above this the server is visibly skipping
-const SKIP_SEVERE = 0.40;       // bad enough to take two steps at once
+/* What counts as trouble.
+ *
+ * The skip fraction on its own is not it. A compositor offering 60 Hz down a
+ * link that comfortably carries 30 fps skips half of every second forever, and
+ * that stream is perfectly good -- reacting to the ratio alone would drive
+ * quality to the floor and hold it there.
+ *
+ * What matters is the frame rate that actually arrives. Skipping is then the
+ * corroboration that a low rate means congestion rather than a desktop with
+ * nothing happening on it, which legitimately delivers almost no frames and
+ * skips none.
+ */
+const TARGET_FPS = 24;          // below this, motion is visibly not smooth
+const SEVERE_FPS = 12;          // bad enough to take two steps at once
+const SKIP_PRESENT = 0.05;      // the server is skipping rather than idle
+const CONFIRM_MS = 1000;        // trouble has to persist before it is acted on
+const SMOOTHING = 0.4;          // weight of the newest sample in the running average
 const DOWN_COOLDOWN_MS = 2000;
 const UP_CLEAN_MS = 10000;      // uninterrupted clean time before probing up
 
@@ -129,6 +145,9 @@ let rfb = null;
 let quality = QUALITY_START;
 let lastDownAt = 0;
 let cleanSince = null;
+let strugglingSince = null;
+let smoothedFps = null;
+let smoothedSkip = null;
 let connected = false;
 
 const gumball = document.getElementById('gumball');
@@ -146,7 +165,7 @@ function showBanner(text) {
  * frames. Quality alone would call a pristine 3 fps slideshow excellent;
  * skipping alone would say nothing about how the picture looks.
  */
-function tierFor(quality, skipping) {
+function tierFor(quality, struggling) {
   const order = ['poor', 'fair', 'good', 'excellent'];
   let index;
   if (quality >= 8) index = 3;
@@ -154,7 +173,7 @@ function tierFor(quality, skipping) {
   else if (quality >= 4) index = 1;
   else index = 0;
 
-  if (skipping) index = Math.max(0, index - 1);
+  if (struggling) index = Math.max(0, index - 1);
   return order[index];
 }
 
@@ -231,16 +250,38 @@ async function poll() {
     return;
   }
 
-  const skip = client.skip_fraction || 0;
-  const skipping = skip > SKIP_DEGRADED;
+  /* Each sample covers only half a second, so it is coarse and bursty desktop
+   * load makes it jump either side of the threshold. Averaging first means the
+   * loop reacts to a trend rather than to one noisy reading -- without it, a
+   * single good sample resets the confirmation timer and the loop never acts
+   * on a link that is genuinely struggling.
+   */
+  const rawFps = client.encoded_fps || 0;
+  const rawSkip = client.skip_fraction || 0;
+  smoothedFps = smoothedFps === null ? rawFps :
+    SMOOTHING * rawFps + (1 - SMOOTHING) * smoothedFps;
+  smoothedSkip = smoothedSkip === null ? rawSkip :
+    SMOOTHING * rawSkip + (1 - SMOOTHING) * smoothedSkip;
 
-  if (skipping) {
+  const skip = smoothedSkip;
+  const fps = smoothedFps;
+  const skipping = skip > SKIP_PRESENT;
+  const struggling = skipping && fps < TARGET_FPS;
+
+  if (struggling) {
     cleanSince = null;
-    if (now - lastDownAt >= DOWN_COOLDOWN_MS) {
-      applyQuality(quality - (skip > SKIP_SEVERE ? 2 : 1));
+    /* A single sample is not enough. The rate is measured over half a second,
+     * so it is coarse, and one dip below target on an otherwise healthy link
+     * would otherwise cost a quality step and the key frame that goes with it.
+     */
+    if (strugglingSince === null) strugglingSince = now;
+    if (now - strugglingSince >= CONFIRM_MS &&
+            now - lastDownAt >= DOWN_COOLDOWN_MS) {
+      applyQuality(quality - (fps < SEVERE_FPS ? 2 : 1));
       lastDownAt = now;
     }
   } else {
+    strugglingSince = null;
     if (cleanSince === null) cleanSince = now;
     if (now - cleanSince >= UP_CLEAN_MS && quality < QUALITY_MAX) {
       applyQuality(quality + 1);
@@ -250,9 +291,9 @@ async function poll() {
 
   const extra = snapshot.clients.length > 1 ?
     ` · worst of ${snapshot.clients.length} clients` : '';
-  render(tierFor(effectiveQuality(client), skipping),
-      `q${quality} · ${client.encoded_fps.toFixed(0)} fps` +
-      (skipping ? ` · ${(skip * 100).toFixed(0)}% skipped` : '') + extra);
+  render(tierFor(effectiveQuality(client), struggling),
+      `q${quality} · ${fps.toFixed(0)} fps` +
+      (struggling ? ` · ${(skip * 100).toFixed(0)}% skipped` : '') + extra);
 }
 
 // Published for the end-to-end test, which asserts on the tier and the quality
