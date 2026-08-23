@@ -46,6 +46,14 @@ import io.qameta.allure.Allure;
 @DisplayName("Weston over noVNC uses H.264 end to end")
 class WestonNoVncH264Test {
 
+    /*
+     * Pinned rather than :latest. The image tracks the current Selenium server,
+     * which has run ahead of the client on the classpath; the mismatch shows up
+     * as session creation timing out with nothing useful in the log. Bump this
+     * and selenium-java together.
+     */
+    private static final String SELENIUM_IMAGE = "selenium/standalone-chrome:4.27.0";
+
     private static final Duration OBSERVATION = Duration.ofSeconds(5);
     private static final Duration SAMPLE_INTERVAL = Duration.ofMillis(250);
 
@@ -107,7 +115,7 @@ class WestonNoVncH264Test {
         weston.start();
 
         browser = new BrowserWebDriverContainer<>(
-                DockerImageName.parse("selenium/standalone-chrome:latest")
+                DockerImageName.parse(SELENIUM_IMAGE)
                     .asCompatibleSubstituteFor("selenium/standalone-chrome"))
             .withNetwork(network)
             .withCapabilities(chromeOptions())
