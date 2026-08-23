@@ -21,6 +21,8 @@ struct bwe* bwe_create(int rtt_min)
 	if (!self)
 		return NULL;
 
+	self->rtt_min = rtt_min;
+
 	return self;
 }
 
@@ -52,6 +54,12 @@ static double estimate_non_congested_bandwidth(const struct bwe* self)
 		bw_delay_total += bw_delay;
 	}
 
+	// Every sample took exactly the minimum round-trip time, so this
+	// method has nothing to measure. That is normal on a fast link with
+	// little jitter; it does not mean the bandwidth is infinite.
+	if (bw_delay_total <= 0)
+		return 0;
+
 	return (double)bytes_total / (bw_delay_total * 1e-6);
 }
 
@@ -73,6 +81,9 @@ static double estimate_congested_bandwidth(const struct bwe* self)
 
 	int rtt = s1->arrival_time - s0->departure_time;
 	int bw_delay = rtt - self->rtt_min;
+
+	if (bw_delay <= 0)
+		return 0;
 
 	return (double)bytes_total / (bw_delay * 1e-6);
 }

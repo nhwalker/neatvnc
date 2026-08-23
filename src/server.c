@@ -926,11 +926,19 @@ static void process_fb_update_requests(struct nvnc_client* client)
 	if (!client_has_damage(client))
 		return;
 
+	// Bytes per second, as measured from fence round trips.
 	int bandwidth = bwe_get_estimate(client->bwe);
-	if (bandwidth != 0) {
+	if (bandwidth > 0) {
+		/* What the link can carry in one round trip, plus a frame
+		 * interval's worth of slack. The delay budget multiplies the
+		 * bandwidth; it used to be added to a byte count, which is
+		 * dimensionally meaningless and left the budget contributing
+		 * nothing, so frames were dropped far more eagerly than
+		 * intended.
+		 */
 		double max_delay = 33.333e-3;
-		int max_inflight = round(max_delay + 1e-6 *
-				client->min_rtt * bandwidth);
+		int max_inflight = round((max_delay +
+				1e-6 * client->min_rtt) * bandwidth);
 
 		// If there is already more data inflight than the link can
 		// handle, let's not put more load on it:
