@@ -103,6 +103,14 @@ false and will use Tight.
 ignoring CopyRect, so H.264 wins on its own. There is no URL parameter for it;
 if you are getting Tight, one of the three points above is the reason.
 
+**Frames must be a single slice.** The open-h264 encoding is consumed one NAL
+unit at a time — noVNC hands each to WebCodecs as its own chunk — so a frame cut
+into several slices arrives as several *partial* frames and the picture falls
+apart: Chrome renders a flat green field (all-zero YUV), Firefox renders drifting
+mush. Both are legal H.264 that ffmpeg reassembles without complaint, which is
+why only a browser catches it. NVENC emits one slice per frame; the libx264
+stand-in is pinned to one thread so that it does too.
+
 **Weston needs a PAM login.** `vnc_handle_auth()` rejects any username other
 than the user Weston runs as, so in the container that means `root` plus
 whatever `VNC_PASSWORD` is set to. noVNC's `password` URL parameter is not
@@ -115,6 +123,7 @@ enough on its own because RSA-AES authentication also needs the username.
 | `NEATVNC_H264_ENCODER` | `v4l2m2m` \| `vaapi` \| `nvenc` \| `auto` (default) — pins encoder selection |
 | `NEATVNC_H264_NVENC_CODEC` | libavcodec encoder name, default `h264_nvenc`. Setting it to `libx264` runs the same code path on a software encoder, which is how CI tests this without a GPU |
 | `NEATVNC_H264_NVENC_FORMAT` | `rgb` (default where the encoder accepts it) or `nv12`. `nv12` moves the colour conversion from NVENC to libswscale, where the coefficients are ours to choose — try it if colours look off |
+| `NVNC_LOG_LEVEL` | `error` \| `warning` (release default) \| `info` \| `debug` \| `trace`. `info` is the one that names the chosen encoder and encoding |
 
 ## Checking that it is working
 
@@ -127,8 +136,35 @@ ffmpeg -hide_banner -encoders | grep nvenc     # h264_nvenc must be listed
 ls /usr/lib64/libnvidia-encode.so.1            # injected by the container toolkit
 ```
 
-Running the server with `NVNC_LOG_LEVEL=debug` logs which encoder was selected
-(`Using h264_nvenc for H.264 encoding`) and which encoding each client got.
+Running the server with `NVNC_LOG_LEVEL=info` logs which encoder was selected
+(`Using h264_nvenc for H.264 encoding`) and which encoding each client got
+(`Choosing open-h264 encoding for client`). Both are INFO-level, and a release
+build defaults to WARNING, so without the variable you will see neither.
+Accepted values are `error`, `warning`, `info`, `debug` and `trace`.
+
+## End-to-end test
+
+`e2e/` holds a Java 21 / Gradle / Testcontainers test that runs this image,
+points real Chrome at it through Selenium, and checks that the browser
+negotiates and renders H.264 — the one thing the Python tests cannot cover,
+because they are not a browser.
+
+```
+docker build -f packaging/Containerfile.build --target export -o rpms .
+docker build -f packaging/Containerfile.test -t neatvnc-nvenc-test:e2e .
+cd e2e && ./gradlew test && ./gradlew allureSingleFileReport
+```
+
+It asserts from both ends: the server log says it chose open-h264, and the
+browser reports that H.264 rects dominate what it actually decoded, that it
+*could* have decoded H.264 (so a fallback would have been a real fallback), and
+that the picture changes over time rather than freezing on the first keyframe.
+
+The evidence is an Allure report at `e2e/build/allure-report/index.html` —
+one self-contained file — with the session recording and a five-second clip of
+the window the assertions cover embedded in it. `/usr/share/novnc/e2e.html`
+displays the encoding in use in large type, so the recording says what it is
+showing.
 
 ## Testing without a GPU
 

@@ -5,6 +5,11 @@
 #   entrypoint serve      Weston + websockify + noVNC, stays in the foreground
 #   entrypoint selftest   checks that the stack comes up, then exits
 #   entrypoint <cmd>...   runs <cmd> instead
+#
+# Environment:
+#   WESTON_SHELL          weston shell to load, default 'kiosk'
+#   WESTON_DEMO_CLIENTS   space separated clients to start once weston is up
+#   WEB_TLS               0 serves noVNC over plain HTTP instead of HTTPS
 
 set -euo pipefail
 
@@ -13,6 +18,10 @@ MODE="${1:-serve}"
 mkdir -p "${XDG_RUNTIME_DIR:=/run/user/0}"
 chmod 700 "${XDG_RUNTIME_DIR}"
 export XDG_RUNTIME_DIR
+
+# Named explicitly rather than left to weston, which picks the first free
+# wayland-N and so cannot be predicted by the clients we start afterwards.
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-e2e}"
 
 WESTON_LOG=/tmp/weston.log
 CERT=/tmp/novnc.pem
@@ -25,7 +34,8 @@ start_weston() {
 	# still requires a PAM login; see set_password below.
 	weston \
 		--backend=vnc \
-		--shell=kiosk \
+		--shell="${WESTON_SHELL:-kiosk}" \
+		--socket="${WAYLAND_DISPLAY}" \
 		--address=127.0.0.1 \
 		--port="${VNC_PORT}" \
 		--width="${WESTON_WIDTH}" \
@@ -50,6 +60,34 @@ start_weston() {
 	echo "weston did not start listening on ${VNC_PORT}" >&2
 	cat "${WESTON_LOG}" >&2 || true
 	return 1
+}
+
+# Something has to move on screen for an H.264 test to mean anything. These are
+# software rendered: the container has no GPU, so weston runs the pixman
+# renderer and advertises neither wl_drm nor linux-dmabuf, which rules out any
+# EGL client.
+start_demo_clients() {
+	[ -n "${WESTON_DEMO_CLIENTS:-}" ] || return 0
+
+	for client in ${WESTON_DEMO_CLIENTS}; do
+		if ! command -v "${client}" > /dev/null; then
+			echo "demo client ${client} is not installed" >&2
+			return 1
+		fi
+		echo "Starting ${client}"
+		"${client}" > "/tmp/${client}.log" 2>&1 &
+	done
+
+	# Long enough for them to bind a surface, short enough not to matter.
+	sleep 3
+
+	for client in ${WESTON_DEMO_CLIENTS}; do
+		if ! pgrep -x "$(basename "${client}" | cut -c1-15)" > /dev/null; then
+			echo "demo client ${client} did not stay up:" >&2
+			cat "/tmp/${client}.log" >&2 || true
+			return 1
+		fi
+	done
 }
 
 set_password() {
@@ -79,8 +117,18 @@ case "${MODE}" in
 serve)
 	set_password
 	start_weston
-	make_cert
+	start_demo_clients
 
+	# Plain HTTP is for the end-to-end test, which marks the origin trusted
+	# in the browser instead. Everyone else wants TLS, because noVNC only
+	# offers H.264 in a secure context.
+	if [ "${WEB_TLS:-1}" = "0" ]; then
+		echo "noVNC on http://localhost:${WEB_PORT}/vnc.html"
+		exec websockify --web /usr/share/novnc \
+			"0.0.0.0:${WEB_PORT}" "127.0.0.1:${VNC_PORT}"
+	fi
+
+	make_cert
 	echo "noVNC on https://localhost:${WEB_PORT}/vnc.html"
 	exec websockify --web /usr/share/novnc --cert "${CERT}" \
 		"0.0.0.0:${WEB_PORT}" "127.0.0.1:${VNC_PORT}"
@@ -95,6 +143,9 @@ selftest)
 	# noVNC must be new enough to have an H.264 decoder at all.
 	test -f /usr/share/novnc/core/decoders/h264.js || rc=1
 	echo "noVNC h264 decoder: present"
+
+	test -f /usr/share/novnc/e2e.html || rc=1
+	echo "end-to-end viewer page: present"
 
 	set_password
 	start_weston || rc=1

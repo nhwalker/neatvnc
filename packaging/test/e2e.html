@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<!--
+  A minimal noVNC viewer for the end-to-end test.
+
+  It exists for two reasons the stock vnc.html cannot serve:
+
+   * it shows which RFB encoding is actually being decoded, in large type, so
+     the recorded video is self-evidencing rather than just "a desktop";
+   * it publishes the same numbers as window.__e2e, so the automated assertions
+     and the human watching the video are reading one source.
+
+  noVNC's core is designed to be embedded exactly like this; see its
+  docs/EMBEDDING.md. Written against noVNC 1.7.0, which the test image pins.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>neatvnc H.264 end-to-end</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #101014;
+    color: #e8e8ea;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #screen { position: absolute; inset: 0; }
+  #badge {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 10;
+    padding: 10px 14px;
+    background: rgba(8, 8, 12, 0.86);
+    border-bottom-right-radius: 10px;
+    border: 1px solid #2c2c36;
+    border-top: 0;
+    border-left: 0;
+    line-height: 1.45;
+    font-size: 15px;
+    pointer-events: none;
+  }
+  #encoding { font-size: 27px; font-weight: 700; letter-spacing: 0.4px; }
+  .good { color: #4ade80; }
+  .bad { color: #f87171; }
+  .muted { color: #9a9aa6; }
+  #window-marker {
+    display: inline-block;
+    padding: 1px 9px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .recording { background: #dc2626; color: #fff; }
+  .idle { background: #33333d; color: #9a9aa6; }
+</style>
+</head>
+<body>
+<div id="screen"></div>
+<div id="badge">
+  <div id="encoding" class="muted">connecting…</div>
+  <div id="counts" class="muted">no rects yet</div>
+  <div id="rate" class="muted">—</div>
+  <div id="codec" class="muted">—</div>
+  <div>
+    <span id="window-marker" class="idle">IDLE</span>
+    <span id="clock" class="muted"></span>
+  </div>
+  <div id="status" class="muted"></div>
+</div>
+
+<script type="module">
+import RFB from './core/rfb.js';
+import { supportsWebCodecsH264Decode } from './core/util/browser.js';
+
+// Encoding numbers from RFB. 50 is the one this whole exercise is about.
+const ENCODING_NAMES = {
+  0: 'Raw',
+  1: 'CopyRect',
+  2: 'RRE',
+  5: 'Hextile',
+  6: 'Zlib',
+  7: 'Tight',
+  16: 'ZRLE',
+  21: 'JPEG',
+  50: 'H.264',
+  '-260': 'TightPNG',
+};
+
+const params = new URLSearchParams(location.search);
+const host = params.get('host') || location.hostname;
+const port = params.get('port') || location.port;
+const path = params.get('path') || 'websockify';
+const username = params.get('username') || 'root';
+const password = params.get('password') || '';
+
+const state = {
+  connected: false,
+  disconnected: false,
+  disconnectReason: null,
+  error: null,
+  hookInstalled: false,
+  webcodecsH264: false,
+  counts: {},
+  total: 0,
+  lastEncoding: null,
+  rectsPerSecond: 0,
+  windowOpen: false,
+  startedAt: Date.now(),
+};
+
+window.__e2e = state;
+
+// The recording window is opened and closed by the test, so the video shows
+// exactly the span the assertions cover.
+window.__e2eMarkWindow = (open) => {
+  state.windowOpen = !!open;
+  const marker = document.getElementById('window-marker');
+  marker.textContent = open ? '● RECORDING WINDOW' : 'IDLE';
+  marker.className = open ? 'recording' : 'idle';
+};
+
+function fail(message) {
+  state.error = message;
+  const el = document.getElementById('status');
+  el.textContent = message;
+  el.className = 'bad';
+}
+
+/*
+ * Count every decoded rect, per encoding.
+ *
+ * rfb._decoders is private, hence the version pin. It is wrapped rather than
+ * observed because noVNC exposes no hook for this, and counting decode calls
+ * is the only way to tell what the browser is really doing -- the server's
+ * choice of encoding is not visible from the client API.
+ *
+ * If the wrap cannot be installed the page says so loudly. Silently reporting
+ * zero H.264 rects would look identical to a genuine fallback to Tight, which
+ * is the exact failure this test exists to catch.
+ */
+function installDecoderHook(rfb) {
+  const decoders = rfb._decoders;
+  if (!decoders || typeof decoders !== 'object') {
+    fail('could not reach rfb._decoders; noVNC internals have changed');
+    return false;
+  }
+
+  let wrapped = 0;
+  for (const key of Object.keys(decoders)) {
+    const decoder = decoders[key];
+    if (!decoder || typeof decoder.decodeRect !== 'function')
+      continue;
+
+    const original = decoder.decodeRect.bind(decoder);
+    decoder.decodeRect = function (...args) {
+      state.counts[key] = (state.counts[key] || 0) + 1;
+      state.total += 1;
+      state.lastEncoding = Number(key);
+      return original(...args);
+    };
+    wrapped += 1;
+  }
+
+  if (wrapped === 0) {
+    fail('rfb._decoders held no decoders to wrap');
+    return false;
+  }
+
+  state.hookInstalled = true;
+  return true;
+}
+
+function encodingName(encoding) {
+  return ENCODING_NAMES[String(encoding)] || `encoding ${encoding}`;
+}
+
+function render() {
+  const encodingEl = document.getElementById('encoding');
+  if (state.error) {
+    encodingEl.textContent = 'ERROR';
+    encodingEl.className = 'bad';
+  } else if (state.lastEncoding === null) {
+    encodingEl.textContent = state.connected ? 'waiting for pixels…' : 'connecting…';
+    encodingEl.className = 'muted';
+  } else {
+    const name = encodingName(state.lastEncoding);
+    encodingEl.textContent = `ENCODING: ${name}`;
+    encodingEl.className = state.lastEncoding === 50 ? 'good' : 'bad';
+  }
+
+  const counts = Object.keys(state.counts)
+    .sort((a, b) => state.counts[b] - state.counts[a])
+    .map((k) => `${encodingName(k)}=${state.counts[k]}`)
+    .join('  ');
+  document.getElementById('counts').textContent = counts || 'no rects yet';
+
+  document.getElementById('rate').textContent =
+    `${state.rectsPerSecond} rects/s   total ${state.total}`;
+
+  const codecEl = document.getElementById('codec');
+  codecEl.textContent =
+    `WebCodecs H.264: ${state.webcodecsH264 ? 'supported' : 'NOT SUPPORTED'}` +
+    `   secure context: ${window.isSecureContext}`;
+  codecEl.className = state.webcodecsH264 && window.isSecureContext ? 'good' : 'bad';
+
+  const elapsed = ((Date.now() - state.startedAt) / 1000).toFixed(1);
+  document.getElementById('clock').textContent = `  t+${elapsed}s`;
+}
+
+let lastTotal = 0;
+setInterval(() => {
+  state.rectsPerSecond = state.total - lastTotal;
+  lastTotal = state.total;
+}, 1000);
+setInterval(render, 100);
+
+// supportsWebCodecsH264Decode is resolved asynchronously by noVNC: it probes
+// VideoDecoder and then actually decodes a frame, because reporting support is
+// not the same as having it.
+setTimeout(() => { state.webcodecsH264 = supportsWebCodecsH264Decode; }, 1500);
+
+const url = `ws://${host}${port ? ':' + port : ''}/${path}`;
+document.getElementById('status').textContent = `connecting to ${url}`;
+
+let rfb;
+try {
+  rfb = new RFB(document.getElementById('screen'), url, {
+    credentials: { username, password },
+  });
+} catch (err) {
+  fail(`RFB construction failed: ${err && err.message}`);
+  throw err;
+}
+
+rfb.viewOnly = true;
+rfb.scaleViewport = true;
+window.__rfb = rfb;
+
+rfb.addEventListener('connect', () => {
+  state.connected = true;
+  document.getElementById('status').textContent = `connected to ${url}`;
+  installDecoderHook(rfb);
+});
+
+rfb.addEventListener('disconnect', (event) => {
+  state.disconnected = true;
+  state.disconnectReason = (event.detail && event.detail.reason) || 'clean';
+  fail(`disconnected: ${state.disconnectReason}`);
+});
+
+rfb.addEventListener('credentialsrequired', () => {
+  rfb.sendCredentials({ username, password });
+});
+
+rfb.addEventListener('securityfailure', (event) => {
+  fail(`security failure: ${(event.detail && event.detail.reason) || 'unknown'}`);
+});
+</script>
+</body>
+</html>

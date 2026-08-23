@@ -51,6 +51,11 @@
 
 #define DEFAULT_CODEC_NAME "h264_nvenc"
 
+/* Only ever used to keep the encoder's level calculation sane; frames are
+ * timestamped individually and may arrive at any rate below this.
+ */
+#define NOMINAL_FRAMERATE 60
+
 struct fb_queue_entry {
 	struct nvnc_fb* fb;
 	TAILQ_ENTRY(fb_queue_entry) link;
@@ -208,6 +213,15 @@ static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
 	c->width = self->width;
 	c->height = self->height;
 	c->time_base = self->timebase;
+
+	/* The time base is microseconds so that frame timestamps keep their
+	 * precision, but an encoder left to infer the frame rate from it
+	 * concludes that we are feeding it a million frames a second. It then
+	 * writes an SPS whose level cannot legally carry that macroblock rate,
+	 * and strict decoders -- Chrome's WebCodecs among them -- refuse the
+	 * stream outright. Declare a plausible ceiling instead.
+	 */
+	c->framerate = (AVRational){ NOMINAL_FRAMERATE, 1 };
 	c->sample_aspect_ratio = (AVRational){1, 1};
 	c->pix_fmt = self->enc_format;
 	c->gop_size = INT32_MAX; /* We'll select key frames manually */
@@ -250,6 +264,20 @@ static int h264_encoder__init_codec_context(struct h264_encoder_nvenc* self,
 		try_set_option(self, "preset", "ultrafast");
 		try_set_option(self, "tune", "zerolatency");
 		try_set_option(self, "crf", quality_str);
+
+		/* One thread, because threading is what decides how many slices
+		 * a frame is cut into. x264's zerolatency tune turns on sliced
+		 * threads, which produces one slice per core; turning those off
+		 * instead hands the job to frame threads, which delay the first
+		 * packets. Either is legal H.264 and ffmpeg reassembles it
+		 * without complaint, but the open-h264 encoding is consumed one
+		 * NAL unit at a time -- noVNC hands each to WebCodecs as its own
+		 * chunk -- so a multi-slice frame arrives as several partial
+		 * frames and the picture falls apart. NVENC emits one slice per
+		 * frame regardless; this keeps the software stand-in honest
+		 * about the shape of the stream it stands in for.
+		 */
+		c->thread_count = 1;
 	}
 
 	return 0;
