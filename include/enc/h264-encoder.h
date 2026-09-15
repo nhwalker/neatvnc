@@ -30,6 +30,11 @@ struct h264_encoder_impl {
 			uint32_t format, int quality);
 	void (*destroy)(struct h264_encoder*);
 	void (*feed)(struct h264_encoder*, struct nvnc_fb*);
+
+	/* Whether the implementation can encode frame buffers that live in
+	 * main memory rather than in a GBM buffer object.
+	 */
+	bool accepts_sw_frames;
 };
 
 struct h264_encoder {
@@ -49,5 +54,7 @@ void h264_encoder_set_packet_handler_fn(struct h264_encoder*,
 void h264_encoder_set_userdata(struct h264_encoder*, void* userdata);
 
 void h264_encoder_feed(struct h264_encoder*, struct nvnc_fb*);
+
+bool h264_encoder_accepts_sw_frames(const struct h264_encoder*);
 
 void h264_encoder_request_keyframe(struct h264_encoder*);
