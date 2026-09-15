@@ -913,10 +913,10 @@ static void process_fb_update_requests(struct nvnc_client* client)
 		return;
 
 	int bandwidth = bwe_get_estimate(client->bwe);
-	if (bandwidth != 0) {
+	if (bandwidth > 0) {
 		double max_delay = 33.333e-3;
-		int max_inflight = round(max_delay + 1e-6 *
-				client->min_rtt * bandwidth);
+		int max_inflight = round((max_delay +
+				1e-6 * client->min_rtt) * bandwidth);
 
 		// If there is already more data inflight than the link can
 		// handle, let's not put more load on it:
