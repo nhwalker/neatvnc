@@ -153,6 +153,7 @@ static AVFrame* fb_to_avframe(struct nvnc_fb* fb)
 	frame->height = fb->height;
 	frame->format = AV_PIX_FMT_DRM_PRIME;
 	frame->sample_aspect_ratio = (AVRational){1, 1};
+	frame->pts = fb->pts;
 
 	AVBufferRef* desc_ref = av_buffer_create((void*)desc, sizeof(*desc),
 			hw_frame_desc_free, NULL, 0);
@@ -204,14 +205,9 @@ static int h264_encoder__init_buffersrc(struct h264_encoder_ffmpeg* self)
 {
 	int rc;
 
-	/* Placeholder values are used to pacify input checking and the real
-	 * values are set below.
-	 */
-	rc = avfilter_graph_create_filter(&self->filter_in,
-			avfilter_get_by_name("buffer"), "in",
-			"width=1:height=1:pix_fmt=drm_prime:time_base=1/1", NULL,
-			self->filter_graph);
-	if (rc != 0)
+	self->filter_in = avfilter_graph_alloc_filter(self->filter_graph,
+			avfilter_get_by_name("buffer"), "in");
+	if (!self->filter_in)
 		return -1;
 
 	AVBufferSrcParameters *params = av_buffersrc_parameters_alloc();
@@ -230,9 +226,15 @@ static int h264_encoder__init_buffersrc(struct h264_encoder_ffmpeg* self)
 #endif
 
 	rc = av_buffersrc_parameters_set(self->filter_in, params);
-	assert(rc == 0);
-
 	av_free(params);
+
+	if (rc < 0)
+		return -1;
+
+	rc = avfilter_init_dict(self->filter_in, NULL);
+	if (rc < 0)
+		return -1;
+
 	return 0;
 }
 
@@ -312,6 +314,7 @@ static int h264_encoder__init_codec_context(struct h264_encoder_ffmpeg* self,
 	c->width = self->width;
 	c->height = self->height;
 	c->time_base = self->timebase;
+	c->framerate = (AVRational){ 60, 1 };
 	c->sample_aspect_ratio = (AVRational){1, 1};
 	c->pix_fmt = AV_PIX_FMT_VAAPI;
 	c->gop_size = INT32_MAX; /* We'll select key frames manually */

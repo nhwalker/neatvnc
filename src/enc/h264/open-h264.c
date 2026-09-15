@@ -49,7 +49,11 @@ struct open_h264 {
 
 	int quality;
 	bool quality_changed;
+
+	int failed_frames;
 };
+
+#define OPEN_H264_FAILURE_LIMIT 3
 
 enum open_h264_flags {
 	OPEN_H264_FLAG_RESET_CONTEXT = 0,
@@ -70,6 +74,13 @@ static void open_h264_handle_packet(const void* data, size_t size, uint64_t pts,
 		void* userdata)
 {
 	struct open_h264* self = userdata;
+
+	if (size == 0) {
+		self->failed_frames++;
+		encoder_finish_frame(&self->parent, NULL);
+		return;
+	}
+	self->failed_frames = 0;
 
 	// Let's not deplete the RAM if the client isn't pulling
 	if (self->pending.len > 100000000) {
@@ -167,7 +178,9 @@ static int open_h264_encode(struct encoder* enc, struct nvnc_fb* fb,
 
 	if (fb->width != self->width || fb->height != self->height ||
 			fb->fourcc_format != self->format ||
-			self->quality_changed) {
+			self->quality_changed ||
+			self->failed_frames >= OPEN_H264_FAILURE_LIMIT) {
+		self->failed_frames = 0;
 		if (open_h264_resize(self, fb) < 0)
 			return -1;
 	}
