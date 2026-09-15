@@ -717,4 +717,5 @@ struct h264_encoder_impl h264_encoder_nvenc_impl = {
 	.create = h264_encoder_nvenc_create,
 	.destroy = h264_encoder_nvenc_destroy,
 	.feed = h264_encoder_nvenc_feed,
+	.accepts_sw_frames = true,
 };

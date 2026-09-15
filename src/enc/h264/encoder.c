@@ -105,3 +105,8 @@ void h264_encoder_request_keyframe(struct h264_encoder* self)
 {
 	self->next_frame_should_be_keyframe = true;
 }
+
+bool h264_encoder_accepts_sw_frames(const struct h264_encoder* self)
+{
+	return self->impl->accepts_sw_frames;
+}
