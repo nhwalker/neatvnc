@@ -2457,6 +2457,19 @@ static bool client_has_encoding(const struct nvnc_client* client,
 static void finish_fb_update(struct nvnc_client* client,
 		struct encoded_frame* frame)
 {
+	if (!frame) {
+		struct nvnc* server = client->server;
+		client->n_pending_requests++;
+		if (server->display && server->display->buffer)
+			pixman_region_union_rect(&client->damage,
+					&client->damage, 0, 0,
+					server->display->buffer->width,
+					server->display->buffer->height);
+		client->is_updating = false;
+		DTRACE_PROBE1(neatvnc, update_fb_done, client);
+		return;
+	}
+
 	if (client->net_stream->state == STREAM_STATE_CLOSED)
 		goto complete;
 
