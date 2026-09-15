@@ -20,3 +20,15 @@ base64 = executable('base64',
 	include_directories: inc,
 )
 test('base64', base64)
+
+bandwidth = executable('bandwidth',
+	[
+		'test-bandwidth.c',
+		'../src/bandwidth.c',
+	],
+	include_directories: inc,
+	dependencies: [
+		libm,
+	],
+)
+test('bandwidth', bandwidth)
