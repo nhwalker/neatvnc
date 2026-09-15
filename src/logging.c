@@ -25,6 +25,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
+#include <strings.h>
 #include <threads.h>
 
 #ifdef HAVE_LIBAVUTIL
@@ -95,6 +96,39 @@ static FILE* stream_for_log_level(enum nvnc_log_level level)
 	}
 
 	return stderr;
+}
+
+/* The compiled-in default is WARNING for release builds, which hides the
+ * messages naming the chosen H.264 encoder and the encoding picked for each
+ * client -- exactly what you need when working out why a deployment fell back
+ * to raw. Let the environment raise it without a rebuild.
+ */
+__attribute__((constructor))
+static void nvnc__apply_log_level_from_env(void)
+{
+	static const struct {
+		const char* name;
+		enum nvnc_log_level level;
+	} levels[] = {
+		{ "error", NVNC_LOG_ERROR },
+		{ "warning", NVNC_LOG_WARNING },
+		{ "info", NVNC_LOG_INFO },
+		{ "debug", NVNC_LOG_DEBUG },
+		{ "trace", NVNC_LOG_TRACE },
+	};
+
+	const char* value = getenv("NVNC_LOG_LEVEL");
+	if (!value || !value[0])
+		return;
+
+	for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); ++i)
+		if (strcasecmp(value, levels[i].name) == 0) {
+			nvnc_set_log_level(levels[i].level);
+			return;
+		}
+
+	fprintf(stderr, "neatvnc: ignoring unknown NVNC_LOG_LEVEL \"%s\"\n",
+			value);
 }
 
 static void nvnc__vlog(const struct nvnc_log_data* meta, const char* fmt,
