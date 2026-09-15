@@ -8,3 +8,5 @@ build
 experiments
 subprojects
 sandbox
+packaging/ca-certificates/*.crt
+rpms

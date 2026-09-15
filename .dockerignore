@@ -1,0 +1,4 @@
+build/
+subprojects/
+rpms/
+!rpms/*.rpm
