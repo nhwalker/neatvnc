@@ -86,4 +86,20 @@ public class WestonContainer extends GenericContainer<WestonContainer> {
     public String internalOrigin() {
         return "http://" + NETWORK_ALIAS + ":" + WEB_PORT;
     }
+
+    /**
+     * Serve over TLS with the entrypoint's self-signed certificate instead of
+     * plain HTTP. This is the production shape -- a secure context without any
+     * browser trust flags -- and the browser must be told to accept the
+     * certificate (see TlsWssTest).
+     */
+    public WestonContainer serveTls() {
+        withEnv("WEB_TLS", "1");
+        return this;
+    }
+
+    /** The TLS URL as seen from another container on the same network. */
+    public String internalTlsOrigin() {
+        return "https://" + NETWORK_ALIAS + ":" + WEB_PORT;
+    }
 }
