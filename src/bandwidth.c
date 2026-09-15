@@ -1,6 +1,7 @@
 #include "bandwidth.h"
 
 #include <stdlib.h>
+#include <limits.h>
 #include <tgmath.h>
 
 #define SAMPLES_MAX 16
@@ -20,6 +21,8 @@ struct bwe* bwe_create(int rtt_min)
 			SAMPLES_MAX);
 	if (!self)
 		return NULL;
+
+	self->rtt_min = rtt_min;
 
 	return self;
 }
@@ -52,6 +55,9 @@ static double estimate_non_congested_bandwidth(const struct bwe* self)
 		bw_delay_total += bw_delay;
 	}
 
+	if (bw_delay_total <= 0)
+		return 0;
+
 	return (double)bytes_total / (bw_delay_total * 1e-6);
 }
 
@@ -73,6 +79,9 @@ static double estimate_congested_bandwidth(const struct bwe* self)
 
 	int rtt = s1->arrival_time - s0->departure_time;
 	int bw_delay = rtt - self->rtt_min;
+
+	if (bw_delay <= 0)
+		return 0;
 
 	return (double)bytes_total / (bw_delay * 1e-6);
 }
@@ -102,5 +111,8 @@ void bwe_update_rtt_min(struct bwe* self, int rtt_min)
 
 int bwe_get_estimate(const struct bwe* self)
 {
+	if (self->estimate >= (double)INT_MAX)
+		return INT_MAX;
+
 	return round(self->estimate);
 }
