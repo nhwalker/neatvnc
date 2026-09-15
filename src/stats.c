@@ -28,6 +28,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
 #include <aml.h>
@@ -46,8 +47,48 @@ static uint64_t stats__now_ms(void)
 	return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* Returns the length of the valid UTF-8 sequence starting at p, or 0 if the
+ * bytes at p are not one. Overlong encodings, surrogates and values beyond
+ * U+10FFFF all count as invalid. Never reads past a NUL, because a NUL can
+ * never pass the continuation-byte check.
+ */
+static int stats__utf8_sequence_length(const unsigned char* p)
+{
+	uint32_t cp;
+	int len;
+
+	if (p[0] < 0x80)
+		return 1;
+	else if ((p[0] & 0xe0) == 0xc0) { len = 2; cp = p[0] & 0x1f; }
+	else if ((p[0] & 0xf0) == 0xe0) { len = 3; cp = p[0] & 0x0f; }
+	else if ((p[0] & 0xf8) == 0xf0) { len = 4; cp = p[0] & 0x07; }
+	else
+		return 0;
+
+	for (int i = 1; i < len; ++i) {
+		if ((p[i] & 0xc0) != 0x80)
+			return 0;
+		cp = (cp << 6) | (p[i] & 0x3f);
+	}
+
+	if (len == 2 && cp < 0x80)
+		return 0;
+	if (len == 3 && (cp < 0x800 || (cp >= 0xd800 && cp <= 0xdfff)))
+		return 0;
+	if (len == 4 && (cp < 0x10000 || cp > 0x10ffff))
+		return 0;
+
+	return len;
+}
+
 /* JSON string escaping, for the handful of fields that come from outside:
  * peer addresses and authenticated user names.
+ *
+ * Bytes that do not form valid UTF-8 become U+FFFD. A user name is a value
+ * the remote client chose, and RFC 8259 requires JSON to be UTF-8 -- passing
+ * raw bytes through would let one client hand every non-browser consumer of
+ * this file (python, jq) a decode error. Browsers already substitute U+FFFD
+ * on decode; this makes every reader see the same thing.
  */
 static void stats__put_json_string(FILE* out, const char* value)
 {
@@ -62,10 +103,19 @@ static void stats__put_json_string(FILE* out, const char* value)
 		case '\r': fputs("\\r", out); break;
 		case '\t': fputs("\\t", out); break;
 		default:
-			if (*p < 0x20)
+			if (*p < 0x20) {
 				fprintf(out, "\\u%04x", *p);
-			else
+			} else if (*p < 0x80) {
 				fputc(*p, out);
+			} else {
+				int len = stats__utf8_sequence_length(p);
+				if (len > 0) {
+					fwrite(p, 1, len, out);
+					p += len - 1;
+				} else {
+					fputs("\\ufffd", out);
+				}
+			}
 		}
 	}
 	fputc('"', out);
@@ -191,10 +241,29 @@ static void stats__write(struct nvnc* server)
 		return;
 	}
 
-	FILE* out = fopen(tmp_path, "w");
+	/* The temporary file's name is predictable, so it must never follow
+	 * anything already sitting at that path -- in a directory writable by
+	 * another local user, a planted symlink would otherwise redirect this
+	 * write into an arbitrary file with the compositor's privileges. Drop
+	 * whatever is there (a stale file from a crash, or the plant), then
+	 * O_EXCL guarantees the file being written is one this call created.
+	 * 0600 because nothing but the web server ever needs to read it, and
+	 * the operator can relax the directory instead.
+	 */
+	unlink(tmp_path);
+	int fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+	if (fd < 0) {
+		nvnc_log(NVNC_LOG_ERROR, "Could not create %s: %s", tmp_path,
+				strerror(errno));
+		return;
+	}
+
+	FILE* out = fdopen(fd, "w");
 	if (!out) {
 		nvnc_log(NVNC_LOG_ERROR, "Could not open %s: %s", tmp_path,
 				strerror(errno));
+		close(fd);
+		unlink(tmp_path);
 		return;
 	}
 
