@@ -10,3 +10,5 @@ subprojects
 sandbox
 packaging/ca-certificates/*.crt
 rpms
+e2e/.gradle
+e2e/build
