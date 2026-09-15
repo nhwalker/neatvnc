@@ -312,6 +312,7 @@ static int h264_encoder__init_codec_context(struct h264_encoder_ffmpeg* self,
 	c->width = self->width;
 	c->height = self->height;
 	c->time_base = self->timebase;
+	c->framerate = (AVRational){ 60, 1 };
 	c->sample_aspect_ratio = (AVRational){1, 1};
 	c->pix_fmt = AV_PIX_FMT_VAAPI;
 	c->gop_size = INT32_MAX; /* We'll select key frames manually */
