@@ -24,6 +24,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+          # Caches ~/.gradle/caches keyed on the build scripts. Without it
+          # every run downloads the full dependency set from Maven Central,
+          # which rate-limits shared CI runners -- one run here failed on
+          # HTTP 429 before a single test executed.
+          cache: gradle
 
       # Used to cut the observation window out of the session recording. The
       # test still runs without it and attaches the untrimmed video.
